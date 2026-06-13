@@ -103,13 +103,13 @@ $$r_t = \begin{cases} -\beta \cdot \left[ \log \pi_\theta^{\text{RL}}(a_t \mid s
 #### 💡 逐 Token KL 惩罚数值计算示例
 假设当前 KL 惩罚系数 $\beta = 0.1$。当模型在状态 $s_t$ 下预测下一个 token 为 `"is"` 时：
 * **情况 A（合理偏离）**：
-  * SFT 模型预测概率：$\pi^{\text{SFT}}(\text{is} \mid s_t) = 0.5 \implies \log \pi^{\text{SFT}} \approx -0.693$
-  * Policy 模型预测概率：$\pi_\theta^{\text{RL}}(\text{is} \mid s_t) = 0.8 \implies \log \pi_\theta^{\text{RL}} \approx -0.223$
-  * 该步的 KL 惩罚值为：$-0.1 \times [-0.223 - (-0.693)] = -0.1 \times 0.47 = -0.047$（微弱扣分）。
+  * SFT 模型预测概率： $\pi^{\text{SFT}}(\text{is} \mid s_t) = 0.5 \implies \log \pi^{\text{SFT}} \approx -0.693$ 
+  * Policy 模型预测概率： $\pi_\theta^{\text{RL}}(\text{is} \mid s_t) = 0.8 \implies \log \pi_\theta^{\text{RL}} \approx -0.223$ 
+  * 该步的 KL 惩罚值为： $-0.1 \times [-0.223 - (-0.693)] = -0.1 \times 0.47 = -0.047$ （微弱扣分）。
 * **情况 B（极端偏离/Reward Hacking）**：
-  * SFT 模型预测概率：$\pi^{\text{SFT}}(\text{is} \mid s_t) = 0.1 \implies \log \pi^{\text{SFT}} \approx -2.303$
-  * Policy 模型预测概率：$\pi_\theta^{\text{RL}}(\text{is} \mid s_t) = 0.9 \implies \log \pi_\theta^{\text{RL}} \approx -0.105$
-  * 该步的 KL 惩罚值为：$-0.1 \times [-0.105 - (-2.303)] = -0.1 \times 2.198 \approx -0.220$（高额扣分）。
+  * SFT 模型预测概率： $\pi^{\text{SFT}}(\text{is} \mid s_t) = 0.1 \implies \log \pi^{\text{SFT}} \approx -2.303$ 
+  * Policy 模型预测概率： $\pi_\theta^{\text{RL}}(\text{is} \mid s_t) = 0.9 \implies \log \pi_\theta^{\text{RL}} \approx -0.105$ 
+  * 该步的 KL 惩罚值为： $-0.1 \times [-0.105 - (-2.303)] = -0.1 \times 2.198 \approx -0.220$ （高额扣分）。
 
 通过这种机制，一旦 Policy 模型选择了一个在 SFT 看来概率极低而在 RM 看来得分高的 Token，KL 惩罚就会急剧增加，强行纠正模型的偏离。
 
