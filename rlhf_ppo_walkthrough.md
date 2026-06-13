@@ -52,7 +52,7 @@ graph LR
 |---|---|
 | **状态 $s_t$** | $s_t = (x, y_1, y_2, \dots, y_{t-1})$ 即 Prompt + 已生成的 tokens |
 | **动作 $a_t$** | $a_t = y_t \in \text{Vocabulary}$（从词表中选择下一个 token） |
-| **策略 $\pi(a\|s)$** | $\pi_\theta^{\text{RL}}(y_t \| x, y_1, \dots, y_{t-1})$ 即 LLM 生成下一个 token 的概率分布 |
+| **策略 $\pi(a \mid s)$** | $\pi_\theta^{\text{RL}}(y_t \mid x, y_1, \dots, y_{t-1})$ 即 LLM 生成下一个 token 的概率分布 |
 | **环境 Step** | 自回归向后生成一个 token |
 | **Episode 终止** | 生成 EOS token 或达到最大长度截断 |
 | **即时奖励 $r_t$** | 中间步 $r_t = 0$；最后一步输出完整文本时由 Reward Model 计算得分 $r(x,y)$并减去 KL 惩罚 |
@@ -95,7 +95,7 @@ sequenceDiagram
 RLHF 中的即时奖励并非由外部物理环境给出，而是通过计算 **Reward Model 分数** 并扣除 **KL 散度惩罚** 得到。
 
 #### 逐 token 惩罚方式下各步奖励：
-$$r_t = \begin{cases} -\beta \cdot \left[ \log \pi_\theta^{\text{RL}}(a_t|s_t) - \log \pi^{\text{SFT}}(a_t|s_t) \right] & \text{if } t < T \\ r(x, y) - \beta \cdot \left[ \log \pi_\theta^{\text{RL}}(a_t|s_t) - \log \pi^{\text{SFT}}(a_t|s_t) \right] & \text{if } t = T \end{cases}$$
+$$r_t = \begin{cases} -\beta \cdot \left[ \log \pi_\theta^{\text{RL}}(a_t \mid s_t) - \log \pi^{\text{SFT}}(a_t \mid s_t) \right] & \text{if } t < T \\ r(x, y) - \beta \cdot \left[ \log \pi_\theta^{\text{RL}}(a_t \mid s_t) - \log \pi^{\text{SFT}}(a_t \mid s_t) \right] & \text{if } t = T \end{cases}$$
 
 > [!NOTE]
 > **KL 惩罚的作用**：防止 Policy LM 为了迎合 Reward Model 的喜好而生成语病、怪异字符等（称为 Reward Hacking）。参数 $\beta$ 控制了对偏离 SFT 模型的惩罚力度。
@@ -103,12 +103,12 @@ $$r_t = \begin{cases} -\beta \cdot \left[ \log \pi_\theta^{\text{RL}}(a_t|s_t) -
 #### 💡 逐 Token KL 惩罚数值计算示例
 假设当前 KL 惩罚系数 $\beta = 0.1$。当模型在状态 $s_t$ 下预测下一个 token 为 `"is"` 时：
 * **情况 A（合理偏离）**：
-  * SFT 模型预测概率：$\pi^{\text{SFT}}(\text{"is"}|s_t) = 0.5 \implies \log \pi^{\text{SFT}} \approx -0.693$
-  * Policy 模型预测概率：$\pi_\theta^{\text{RL}}(\text{"is"}|s_t) = 0.8 \implies \log \pi_\theta^{\text{RL}} \approx -0.223$
+  * SFT 模型预测概率：$\pi^{\text{SFT}}(\text{is} \mid s_t) = 0.5 \implies \log \pi^{\text{SFT}} \approx -0.693$
+  * Policy 模型预测概率：$\pi_\theta^{\text{RL}}(\text{is} \mid s_t) = 0.8 \implies \log \pi_\theta^{\text{RL}} \approx -0.223$
   * 该步的 KL 惩罚值为：$-0.1 \times [-0.223 - (-0.693)] = -0.1 \times 0.47 = -0.047$（微弱扣分）。
 * **情况 B（极端偏离/Reward Hacking）**：
-  * SFT 模型预测概率：$\pi^{\text{SFT}}(\text{"is"}|s_t) = 0.1 \implies \log \pi^{\text{SFT}} \approx -2.303$
-  * Policy 模型预测概率：$\pi_\theta^{\text{RL}}(\text{"is"}|s_t) = 0.9 \implies \log \pi_\theta^{\text{RL}} \approx -0.105$
+  * SFT 模型预测概率：$\pi^{\text{SFT}}(\text{is} \mid s_t) = 0.1 \implies \log \pi^{\text{SFT}} \approx -2.303$
+  * Policy 模型预测概率：$\pi_\theta^{\text{RL}}(\text{is} \mid s_t) = 0.9 \implies \log \pi_\theta^{\text{RL}} \approx -0.105$
   * 该步的 KL 惩罚值为：$-0.1 \times [-0.105 - (-2.303)] = -0.1 \times 2.198 \approx -0.220$（高额扣分）。
 
 通过这种机制，一旦 Policy 模型选择了一个在 SFT 看来概率极低而在 RM 看来得分高的 Token，KL 惩罚就会急剧增加，强行纠正模型的偏离。
@@ -223,9 +223,9 @@ $$r_t = \begin{cases} -\beta \cdot \left[ \log \pi_\theta^{\text{RL}}(a_t|s_t) -
 
 | 字段名 | 来源 | Phase 2 优化时的流向与用途 |
 |---|---|---|
-| **$s_t$** | 采样序列当前上下文 | 输入当前 Policy LM，前向传播得到**新概率** $\pi_\theta(a_t\|s_t)$ |
+| **$s_t$** | 采样序列当前上下文 | 输入当前 Policy LM，前向传播得到**新概率** $\pi_\theta(a_t \mid s_t)$ |
 | **$a_t$** | 采样时采到的 token | 索引对应的概率值 |
-| **$\log \pi_{\theta_{\text{old}}}(a_t\|s_t)$** | 采样时记录的旧对数概率 | 用于计算比率：$\text{ratio} = \exp(\log \pi_\theta - \log \pi_{\theta_{\text{old}}})$ |
+| **$\log \pi_{\theta_{\text{old}}}(a_t \mid s_t)$** | 采样时记录的旧对数概率 | 用于计算比率：$\text{ratio} = \exp(\log \pi_\theta - \log \pi_{\theta_{\text{old}}})$ |
 | **$\hat{A}_t$** | 打乱前由 GAE 算好的优势 | 与 ratio 相乘得到策略优化的梯度方向和幅度 |
 | **$\hat{R}_t$** | 打乱前算好的目标回报 | 作为 Value Model MSE Loss 的拟合真值（Label） |
 
@@ -235,7 +235,7 @@ $$r_t = \begin{cases} -\beta \cdot \left[ \log \pi_\theta^{\text{RL}}(a_t|s_t) -
 
 ### 5.1 PPO-Clip Loss 是如何更新 Policy 模型的？
 
-$$L^{\text{CLIP}} = -\mathbb{E}\left[\min\left(\frac{\pi_\theta(a_t|s_t)}{\pi_{\theta_{\text{old}}}(a_t|s_t)} \hat{A}_t, \; \text{clip}\left(\frac{\pi_\theta(a_t|s_t)}{\pi_{\theta_{\text{old}}}(a_t|s_t)}, 1-\epsilon, 1+\epsilon\right) \hat{A}_t\right)\right]$$
+$$L^{\text{CLIP}} = -\mathbb{E}\left[\min\left(\frac{\pi_\theta(a_t \mid s_t)}{\pi_{\theta_{\text{old}}}(a_t \mid s_t)} \hat{A}_t, \; \text{clip}\left(\frac{\pi_\theta(a_t \mid s_t)}{\pi_{\theta_{\text{old}}}(a_t \mid s_t)}, 1-\epsilon, 1+\epsilon\right) \hat{A}_t\right)\right]$$
 
 PPO-Clip Loss 并仅是为了“限制偏离”，而是**“在保障安全的前提下，尽可能朝正确的方向更新 Policy 参数 $\theta$”**：
 
@@ -346,7 +346,7 @@ RLHF 阶段以“极难收敛、极其敏感”著称，以下是三大典型失
 
 #### 3. Value Model 崩溃/剧烈摆动
 * **现象**：Value Loss 居高不下，无法收敛，或者预测的 $V(s)$ 与真实的 $\hat{R}$ 几乎没有关联（相关性接近 0）。
-* **原因**：Value 拟合是一个难度极高的连续回归任务，且标签 $\hat{R}$ 是动态变化的。如果 Value 网络学得比 Policy 还慢，就会导致 GAE 计算出的 $\hat{A}$ 全是噪声，彻底毁掉 Policy 更新。
+* **原因**：Value 拟合是一个难度极高的连续回归任务，且标签 $\hat{R}$ 是动态变化的。如果 Value 网络学得比 Policy 还慢，就会导致 GAE 计算出的 $\hat{A}$ 全es噪声，彻底毁掉 Policy 更新。
 * **调参手段**：
   * **非对称学习率**：**必须让 Value 网络的学习率显著大于 Policy**（通常大一个数量级，如 Policy LR = $1\text{e-}6$，Value LR = $1\text{e-}5$）。
   * **Value Warmup/Pre-training**：在 RLHF 正式更新 Policy 之前，先让 Policy 冻结，只采集 Rollout 数据更新 Value Model $2 \sim 3$ 个 epoch，给优势估计打好准确的基础。
@@ -426,7 +426,7 @@ GRPO (Group Relative Policy Optimization) 是 DeepSeek 提出的一种改进，�
   │  - 显存占用: 低              │   │  - 显存占用: 低              │
   └─────────────────────────────┘   └─────────────────────────────┘
 ```
-* **优化策略**：使用 **DeepSpeed ZeRO-Stage 3** 对 Policy LM 和 Value Model 的优化器状态进行分片；冻结的 SFT Model 和 Reward Model 通常采用半精度（BF16/FP16）且可选择卸载（Offload）到 CPU，以此释放关键显存。
+* **优化策略**：使用 **DeepSpeed ZeRO-Stage 3** 对 Policy LM 和 Value Model 的优化器状态进行分片；冻结 of SFT Model 和 Reward Model 通常采用半精度（BF16/FP16）且可选择卸载（Offload）到 CPU，以此释放关键显存。
 
 ### 7.2 LoRA 多头共享设计（VRAM 终极解法）
 为了让 70B 级别的大模型只在一两台 8 卡机器上就能跑起来，工业界常使用 **LoRA 共享架构**（如 TRL 框架支持的绑定实现）：
