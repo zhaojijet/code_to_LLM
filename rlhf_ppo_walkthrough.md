@@ -101,6 +101,9 @@ r(t) = \begin{cases} -\beta \cdot \left[ \log \pi_\theta(a(t) \mid s(t)) - \log 
 $$
 
 > [!NOTE]
+> **为什么中间步 $t < T$ 没有 Reward Model 的分数？** 因为 Reward Model 是对**整个回答** $(x, y)$ 打一个整体分 $r(x, y)$ ，而不是逐 token 打分。只有当最后一个 token $y_T$ 生成完毕、完整回答拼接完成后，才能送入 Reward Model 进行评分。因此中间步的即时奖励仅包含 KL 惩罚项。
+
+> [!NOTE]
 > **KL 惩罚的作用**：防止 Policy LM 为了迎合 Reward Model 的喜好而生成语病、怪异字符等（称为 Reward Hacking）。参数 $\beta$ 控制了对偏离 SFT 模型的惩罚力度。
 
 #### 💡 逐 Token KL 惩罚数值计算示例
@@ -318,7 +321,18 @@ $$
   3. **Phase 3**：此时每行数据已经包含了该时刻的所有计算结果：`(s_t, a_t, log_prob_old, Â_t, R̂_t)`。这些行数据自此成为**独立样本**，不再需要前后的时序信息。
   4. **Phase 4**：打乱 Buffer（Shuffle），切分成 Mini-batches，送入 PPO 计算 Loss 进行随机梯度下降（SGD）。打乱的目的是打碎时间步之间的相关性，符合 SGD 独立同分布（I.I.D.）的假设。
 
-### 4.2 Buffer 中的字段设计及其在 Loss 中的流向
+### 4.2 为什么 PPO 可以对同一批数据训练多个 Epoch？
+
+与普通策略梯度方法（如 REINFORCE）“数据用一次就必须丢弃”不同，PPO 允许对同一批 Rollout 数据训练多轮（对应 [PPO.py L338](file:///Users/jet/Desktop/LLM_Learning/cs336/code_to_LLM/PPO.py#L338) 的 `for _ in range(TRAIN_EPOCHS)`）。
+
+**数学原理**：PPO 使用的是 **Importance Sampling**（重要性采样），通过比率 $\text{ratio} = \frac{\pi_\theta(a|s)}{\pi_{\text{old}}(a|s)}$ 来修正新旧策略之间的分布偏差。理论上，只要新策略 $\pi_\theta$ 与旧策略 $\pi_{\text{old}}$ 差距不太大，重要性采样的近似就是有效的。
+
+PPO-Clip 机制通过将 ratio 截断在 $[1-\epsilon, 1+\epsilon]$ 范围内，**硬性保证了每次更新后新策略不会偏离旧策略太远**。因此即使多轮训练，ratio 始终被限制在信赖域内，重要性采样的近似误差保持可控。
+
+> [!TIP]
+> **工程经验**：在 Acrobot 小环境中，常用 $10$ 个 epoch（如 [PPO.py L43](file:///Users/jet/Desktop/LLM_Learning/cs336/code_to_LLM/PPO.py#L43) 的 `TRAIN_EPOCHS = 10`）；而在 RLHF 大模型训练中，通常只用 $1 \sim 4$ 个 epoch，因为大模型参数空间极大，多次复用同一批数据更容易导致过拟合。
+
+### 4.3 Buffer 中的字段设计及其在 Loss 中的流向
 
 | 字段名 | 来源 | Phase 2 优化时的流向与用途 |
 |---|---|---|
@@ -333,6 +347,8 @@ $$
 ## 五、Phase 2: PPO 优化与 Loss 的物理意义
 
 ### 5.1 PPO-Clip Loss 是如何更新 Policy 模型的？
+
+对应代码 [PPO.py L358-L372](file:///Users/jet/Desktop/LLM_Learning/cs336/code_to_LLM/PPO.py#L358-L372)：
 
 $$
 L^{\text{CLIP}} = -\mathbb{E}\left[\min\left(\frac{\pi_\theta(a(t) \mid s(t))}{\pi_{\text{old}}(a(t) \mid s(t))} \hat{A}(t), \; \text{clip}\left(\frac{\pi_\theta(a(t) \mid s(t))}{\pi_{\text{old}}(a(t) \mid s(t))}, 1-\epsilon, 1+\epsilon\right) \hat{A}(t)\right)\right]
@@ -392,21 +408,43 @@ PPO-Clip Loss 并非仅是为了“限制偏离”，而是**“在保障安全�
 
 ---
 
-### 5.2 三个 Loss 的物理意图与大模型更新机制
+### 5.2 四个 Loss 的物理意图与大模型更新机制
 
-1. **Policy Loss** ( $L^{\text{CLIP}}$ )
+对应代码 [PPO.py L384-L386](file:///Users/jet/Desktop/LLM_Learning/cs336/code_to_LLM/PPO.py#L384-L386) 的总 Loss 组合：
+
+```python
+loss = actor_loss + VALUE_COEF * critic_loss + ENTROPY_COEF * entropy_loss
+```
+
+1. **Policy Loss** ( $L^{\text{CLIP}}$ ，对应 [PPO.py L372](file:///Users/jet/Desktop/LLM_Learning/cs336/code_to_LLM/PPO.py#L372))
    * **作用**：提高好的 token 概率，降低差的 token 概率。
    * **更新参数**：Policy LM $\theta$ 。
 
-2. **Value Loss** ( $L^V$ )
+2. **Value Loss** ( $L^V$ ，对应 [PPO.py L376](file:///Users/jet/Desktop/LLM_Learning/cs336/code_to_LLM/PPO.py#L376))
    * **作用**：让 $V_\phi(s(t))$ 逼近实际回报 $\hat{R}(t)$ 。
    * **更新参数**：Value Model $\phi$ 。
 
-3. **LM Loss** ( $L^{\text{LM}}$ ，可选，即预训练混合损耗)
+3. **Entropy Loss** ( $L^{\text{ENT}}$ ，对应 [PPO.py L381](file:///Users/jet/Desktop/LLM_Learning/cs336/code_to_LLM/PPO.py#L381))
+   * **作用**：最大化策略分布的熵 $H(\pi) = -\sum_a \pi(a|s) \log \pi(a|s)$ ，鼓励策略保持探索性。
+   * **更新参数**：Policy LM $\theta$ 。
+   * **物理直觉**：如果没有熵正则，策略可能会过早地收敛到某个确定性动作（即对某个 token 的选择概率趋近于 $1.0$ ），导致丧失探索能力。熵奖励迫使策略在多个候选动作之间保持适度的随机性，使模型在训练早期能够充分探索不同的生成路径。
+   * **权重选择**：熵系数通常设得很小（如 [PPO.py L47](file:///Users/jet/Desktop/LLM_Learning/cs336/code_to_LLM/PPO.py#L47) 中的 `ENTROPY_COEF = 0.01`），起到柔和的正则化作用而不至于干扰主 Loss 的优化方向。
+
+4. **LM Loss** ( $L^{\text{LM}}$ ，可选，即预训练混合损耗)
    * **作用**：在预训练文本数据上计算自回归 Loss，作为正则化项。
    * **更新参数**：Policy LM $\theta$ 。防止 RL 训练过程中出现大模型的“灾难性遗忘”（即 RL 训练后模型只会做任务，丧失了通用的对话与写作能力）。
 
-### 5.3 优势标准化 (Advantage Normalization)
+### 5.3 总 Loss 的物理含义
+
+综合以上四个 Loss，PPO 的总优化目标为：
+
+$$
+L^{\text{total}} = L^{\text{CLIP}} + c_1 \cdot L^V + c_2 \cdot L^{\text{ENT}} + c_3 \cdot L^{\text{LM}}
+$$
+
+其中 $c_1$ 为 Value Loss 权重（如 $0.5$ ）， $c_2$ 为 Entropy 权重（如 $0.01$ ）， $c_3$ 为 LM Loss 权重（可选，如 $0.1$ ）。在 RLHF 大模型训练中，若 Policy LM 和 Value Model 是独立模型（见第一节说明），则 Policy Loss、Entropy Loss 和 LM Loss 更新 $\theta$ ，Value Loss 单独更新 $\phi$ 。
+
+### 5.4 优势标准化 (Advantage Normalization)
 
 在将优势送入 Loss 计算之前，代码中进行了一步标准化处理（对应 [PPO.py L329](file:///Users/jet/Desktop/LLM_Learning/cs336/code_to_LLM/PPO.py#L329)）：
 
@@ -419,7 +457,7 @@ adv_tensor = (adv_tensor - adv_tensor.mean()) / (adv_tensor.std() + 1e-8)
   1. 无论原始奖励范围如何，优化梯度步长都维持在一个稳定的尺度。
   2. Batch 内部总是有一半的 Token 概率被提升（优势大于 0），另一半概率被降低（优势小于 0），实现了更稳定高效的对比学习。
 
-### 5.4 价值截断 (Value Clipping，进阶技巧)
+### 5.5 价值截断 (Value Clipping，进阶技巧)
 
 在大模型 RLHF 实践中，通常会对价值函数的更新也进行类似于 Policy 的截断限制：
 
@@ -504,7 +542,7 @@ $$
 **结论**：尽管未截断估值 $1.5$ 离真值 $2.0$ 更近（Loss 仅 $0.25$ ），但由于变化幅度过大， $\max$ 机制会强制选择更大的 Clipped Loss（ $0.64$ ）作为最终惩罚。这在梯度更新时，会**抑制**这种由于单批次噪声导致的剧烈突变，保证了价值网络的平滑和稳定。
 
 
-### 5.5 RLHF-PPO 典型失败模式与调参避坑指南
+### 5.6 RLHF-PPO 典型失败模式与调参避坑指南
 
 RLHF 阶段以“极难收敛、极其敏感”著称，以下是三大典型失败模式及其诊断和调参方法：
 
