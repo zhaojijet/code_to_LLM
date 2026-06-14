@@ -1,0 +1,9 @@
+# Agent configuration (local only)
+.agent/
+
+# Helper/scratch scripts
+check_math.py
+process_walkthrough.py
+
+# OS files
+.DS_Store
