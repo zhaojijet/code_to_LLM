@@ -244,8 +244,6 @@ $$
 
 | 字段名 | 来源 | Phase 2 优化时的流向与用途 |
 |---|---|---|
-| 字段名 | 来源 | Phase 2 优化时的流向与用途 |
-|---|---|---|
 | $s(t)$ | 采样序列当前上下文 | 输入当前 Policy LM，前向传播得到新概率 $\pi_\theta(a(t) \mid s(t))$ |
 | $a(t)$ | 采样时采到的 token | 索引对应的概率值 |
 | $\log \pi_{\text{old}}(a(t) \mid s(t))$ | 采样时记录的旧对数概率 | 用于计算比率： $\text{ratio} = \exp(\log \pi_\theta - \log \pi_{\text{old}})$ |
@@ -373,7 +371,7 @@ RLHF 阶段以“极难收敛、极其敏感”著称，以下是三大典型失
 
 #### 3. Value Model 崩溃/剧烈摆动
 * **现象**：Value Loss 居高不下，无法收敛，或者预测的 $V(s)$ 与真实的 $\hat{R}$ 几乎没有关联（相关性接近 0）。
-* **原因**：Value 拟合是一个难度极高的连续回归任务，且标签 $\hat{R}$ 是动态变化的。如果 Value 网络学得比 Policy 还慢，就会导致 GAE 计算出的 $\hat{A}$ 全es噪声，彻底毁掉 Policy 更新。
+* **原因**：Value 拟合是一个难度极高的连续回归任务，且标签 $\hat{R}$ 是动态变化的。如果 Value 网络学得比 Policy 还慢，就会导致 GAE 计算出的 $\hat{A}$ 全是噪声，彻底毁掉 Policy 更新。
 * **调参手段**：
   * **非对称学习率**：**必须让 Value 网络的学习率显著大于 Policy**（通常大一个数量级，如 Policy LR = $1\text{e-}6$，Value LR = $1\text{e-}5$）。
   * **Value Warmup/Pre-training**：在 RLHF 正式更新 Policy 之前，先让 Policy 冻结，只采集 Rollout 数据更新 Value Model $2 \sim 3$ 个 epoch，给优势估计打好准确的基础。
