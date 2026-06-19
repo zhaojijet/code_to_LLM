@@ -45,6 +45,42 @@ $$
 \langle R(m,\theta) \cdot q, \; R(n,\theta) \cdot k \rangle = \langle R(m-n, \theta) \cdot q, \; k \rangle
 $$
 
+**证明：** 需要用到旋转矩阵的两个基本性质：
+
+**性质 1：** 旋转矩阵是正交矩阵，转置 = 逆 = 反向旋转： $R(\alpha)^T = R(\alpha)^{-1} = R(-\alpha)$
+
+**性质 2：** 旋转可叠加： $R(\alpha) \cdot R(\beta) = R(\alpha + \beta)$
+
+推导过程：
+
+$$
+\langle R(m\theta) \cdot q, \; R(n\theta) \cdot k \rangle
+$$
+
+$$
+= (R(m\theta) \cdot q)^T \cdot (R(n\theta) \cdot k) \quad \text{← 内积展开为转置乘法}
+$$
+
+$$
+= q^T \cdot R(m\theta)^T \cdot R(n\theta) \cdot k \quad \text{← 转置分配律: } (AB)^T = B^T A^T
+$$
+
+$$
+= q^T \cdot R(-m\theta) \cdot R(n\theta) \cdot k \quad \text{← 性质1: } R(m\theta)^T = R(-m\theta)
+$$
+
+$$
+= q^T \cdot R((n-m)\theta) \cdot k \quad \text{← 性质2: } R(a) \cdot R(b) = R(a+b)
+$$
+
+最后一步，上式等价于 $\langle R((m-n)\theta) \cdot q, \; k \rangle$ ，因为：
+
+$$
+\langle R((m-n)\theta) \cdot q, \; k \rangle = q^T \cdot R((m-n)\theta)^T \cdot k = q^T \cdot R(-(m-n)\theta) \cdot k = q^T \cdot R((n-m)\theta) \cdot k \quad \blacksquare
+$$
+
+**直觉理解：** 两个向量分别旋转 $m\theta$ 和 $n\theta$ 后做内积，等于只旋转其中一个向量 $(m-n)\theta$ 后做内积 — 因为内积只关心两个向量之间的**夹角差**，而不是各自的绝对角度。
+
 即：位置 $m$ 处的 query 和位置 $n$ 处的 key 做内积，等价于用相对距离 $(m-n)$ 旋转 query 后和原始 key 做内积。内积的结果**只依赖相对位置 $m-n$** ，而不是绝对位置 $m$ 和 $n$ 。
 
 ### 2.2 推广到高维
@@ -232,12 +268,39 @@ def apply_rotary_emb(x, cos, sin):
 
 ### 两种风格等价吗？
 
-**数学上等价**。只要训练和推理用同一种风格，最终效果完全一样。区别只在于配对维度的索引映射。实际中两种都广泛使用：
+**表达能力等价，但不能互换。** 两种风格的维度配对确实不同：
 
-| 风格 | 代表模型 | 优势 |
-|------|---------|------|
-| 交错配对 | LLaMA, Mistral | 用复数乘法实现，代码最简洁 |
-| 半拆分 | GPT-NeoX, 本代码 | 不依赖 `view_as_complex`，兼容性更好 |
+```text
+交错配对:  子空间 i → (x_{2i}, x_{2i+1})
+半拆分:    子空间 i → (x_i, x_{i+d/2})
+
+以 dim=8 为例：
+交错: (x₀,x₁) (x₂,x₃) (x₄,x₅) (x₆,x₇)
+半拆: (x₀,x₄) (x₁,x₅) (x₂,x₆) (x₃,x₇)
+```
+
+这意味着同一个输入向量，两种风格旋转出来的结果是**不同的**。那为什么说"等价"？
+
+**关键在于 $W_Q$ 和 $W_K$ 是可学习的。** 两种风格之间只差一个固定的维度排列（permutation）。设排列矩阵为 $P$ ，则：
+
+$$
+\text{HalfSplit-RoPE}(x) = \text{Interleaved-RoPE}(P \cdot x)
+$$
+
+而 attention 中实际输入 RoPE 的是 $W_Q \cdot h$ ，学习到的 $W_Q$ 可以自动"吸收"这个排列：
+
+$$
+W_Q^{\text{half-split}} = P \cdot W_Q^{\text{interleaved}}
+$$
+
+所以两种风格训练出的模型具有**相同的表达能力**，只是学到的 $W_Q, W_K$ 权重矩阵内部的维度排列不同。
+
+> **⚠️ 注意：** 训练好的模型**不能**切换风格！切换等于随机打乱了维度配对，会导致输出乱码。必须训练和推理用同一种风格。
+
+| 风格　　 | 代表模型　　　　 | 优势　　　　　　　　　　　　　　　　 |
+| ----------| ------------------| --------------------------------------|
+| 交错配对 | LLaMA, Mistral　 | 用复数乘法实现，代码最简洁　　　　　 |
+| 半拆分　 | GPT-NeoX, 本代码 | 不依赖 `view_as_complex`，兼容性更好 |
 
 ---
 
@@ -327,6 +390,19 @@ $$
 \theta'_{\text{base}} = \theta_{\text{base}} \cdot s^{\frac{d}{d-2}}
 $$
 
+**为什么指数是 $d/(d-2)$ ？** 将新 theta 代入频率公式，展开看每个维度实际被缩放了多少：
+
+$$
+\theta'_i = (\theta \cdot s^{\frac{d}{d-2}})^{-2i/d} = \theta^{-2i/d} \cdot s^{-\frac{2i}{d-2}} = \theta_i \cdot s^{-\frac{2i}{d-2}}
+$$
+
+所以每个维度 $i$ 的缩放因子是 $s^{-2i/(d-2)}$ ，代入边界值（ $i$ 的范围是 $0$ 到 $d/2 - 1$ ）：
+
+- $i = 0$ （最高频）： $s^{-2 \cdot 0 / (d-2)} = s^0 = 1$ → 完全不缩放 ✓
+- $i = d/2 - 1$ （最低频）： $s^{-2(d/2-1)/(d-2)} = s^{-(d-2)/(d-2)} = s^{-1} = 1/s$ → 恰好等于完全 PI 缩放 ✓
+
+$d/(d-2)$ 的精确意义：**它是让最低频维度恰好获得 $1/s$ 倍缩放（即完全等价于 PI）的那个指数**。虽然对于高维（如 $d=64$ ）， $d/(d-2) = 64/62 \approx 1.032$ 看似接近 1，但它的作用体现在**展开到每个频率维度后**产生从 1 到 $1/s$ 的精确缩放梯度。
+
 ```python
 # NTK-aware RoPE 实现
 def precompute_freqs_cis_NTK(dim, seq_len, theta=10000.0,
@@ -399,7 +475,18 @@ def precompute_freqs_cis_dynamic_ntk(dim, seq_len, theta=10000.0,
 │  wavelength < α·L  │  过渡平滑      │  wavelength > β·L│
 ```
 
-对于每个频率维度 $i$ ，计算其波长 $\lambda_i = 2\pi / \theta_i$ ，然后：
+对于每个频率维度 $i$ ，计算其波长 $\lambda_i = 2\pi / \theta_i$ 。
+
+**为什么要计算波长？** 因为波长的物理含义是“转完一整圈需要多少个 token 位置”，单位和训练长度 $L_{\text{train}}$ 一致（都是 token 数），可以直接比较：
+
+```text
+例: 频率 θ_i = 0.01 → 波长 λ_i = 2π/0.01 ≈ 628 个位置
+
+若 L_train = 4096:  训练时转了 4096/628 ≈ 6.5 圈 → 充分学会了这个周期 → 可外推
+若 L_train = 100:   训练时转了 100/628  ≈ 0.16 圈 → 连 1/6 圈都没转完 → 无法外推
+```
+
+频率 $\theta_i$ 本身的单位是“弧度/位置”，无法与 $L_{\text{train}}$ 直接比较。波长将其转换为同单位量，让分区判断变得直观：
 
 - 如果 $\lambda_i < \alpha \cdot L_{\text{train}}$ （高频）：训练时已见过多个完整周期 → 完全不缩放（ $\gamma = 0$ ）
 - 如果 $\lambda_i > \beta \cdot L_{\text{train}}$ （低频）：训练时连一个周期都没走完 → 完全使用 PI 缩放（ $\gamma = 1$ ）
@@ -441,6 +528,54 @@ def precompute_freqs_cis_yarn(dim, seq_len, theta=10000.0,
     # 来补偿插值带来的 attention 分布变化
     return torch.cos(freqs), torch.sin(freqs)
 ```
+
+**完整数值计算示例：**
+
+以 `dim=8, theta=10000, L_train=100, scale_factor=4`（扩展到 400）为例，共 $d/2 = 4$ 个子空间：
+
+**Step 1：** 计算基础频率和波长
+
+| $i$ | $\theta_i = 10000^{-2i/8}$ | $\lambda_i = 2\pi/\theta_i$ | 含义 |
+|-----|---------------------------|---------------------------|------|
+| 0 | 1.0 | 6.28 | 每 6 个位置转一圈 |
+| 1 | 0.1 | 62.8 | 每 63 个位置转一圈 |
+| 2 | 0.01 | 628 | 每 628 个位置转一圈 |
+| 3 | 0.001 | 6283 | 每 6283 个位置转一圈 |
+
+**Step 2：** 计算分区边界和 $\gamma$
+
+$$
+\text{low\_bound} = L_{\text{train}} \times \alpha = 100, \quad \text{high\_bound} = L_{\text{train}} \times \beta = 3200
+$$
+
+$$
+\gamma_i = \text{clamp}\left(\frac{\lambda_i - 100}{3200 - 100}, \; 0, \; 1\right)
+$$
+
+| $i$ | $\lambda_i$ | $\gamma_i$ | 区间 |
+|-----|------------|-----------|------|
+| 0 | 6.28 | $(6.28-100)/3100 < 0$ → **0** | 🟢 高频区 |
+| 1 | 62.8 | $(62.8-100)/3100 < 0$ → **0** | 🟢 高频区 |
+| 2 | 628 | $(628-100)/3100$ = **0.170** | 🟡 过渡区 |
+| 3 | 6283 | $(6283-100)/3100 = 1.99$ → **1.0** | 🔴 低频区 |
+
+**Step 3：** 混合频率 $\theta'_i = (1-\gamma)\theta_i + \gamma \cdot \theta_i/s$
+
+| $i$ | $\gamma$ | 计算过程 | $\theta'_i$ | 等效缩放 |
+|-----|---------|---------|------------|----------|
+| 0 | 0 | $1.0 \times 1.0 + 0 \times 0.25$ | 1.0 | 1.0x 不变 |
+| 1 | 0 | $1.0 \times 0.1 + 0 \times 0.025$ | 0.1 | 1.0x 不变 |
+| 2 | 0.170 | $0.83 \times 0.01 + 0.17 \times 0.0025$ | 0.008725 | 0.87x 轻微压缩 |
+| 3 | 1.0 | $0 \times 0.001 + 1.0 \times 0.00025$ | 0.00025 | 0.25x 完全 PI |
+
+**对比总览：**
+
+| $i$ | 原始 | PI（全缩放 $\div 4$ ） | NTK | YaRN | YaRN 区间 |
+|-----|------|---------------------|-----|------|----------|
+| 0 | 1.0 | 0.25 | $\approx 0.98$ | 1.0 | 🟢 高频-保留 |
+| 1 | 0.1 | 0.025 | $\approx 0.085$ | 0.1 | 🟢 高频-保留 |
+| 2 | 0.01 | 0.0025 | $\approx 0.007$ | 0.008725 | 🟡 过渡-轻压 |
+| 3 | 0.001 | 0.00025 | $\approx 0.0004$ | 0.00025 | 🔴 低频-全压 |
 
 **优缺点：**
 
