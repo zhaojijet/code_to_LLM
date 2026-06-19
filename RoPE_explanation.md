@@ -544,9 +544,10 @@ def precompute_freqs_cis_yarn(dim, seq_len, theta=10000.0,
 
 **Step 2：** 计算分区边界和 $\gamma$
 
-$$
-\text{low\_bound} = L_{\text{train}} \times \alpha = 100, \quad \text{high\_bound} = L_{\text{train}} \times \beta = 3200
-$$
+```text
+low_bound  = L_train × α = 100 × 1  = 100
+high_bound = L_train × β = 100 × 32 = 3200
+```
 
 $$
 \gamma_i = \text{clamp}\left(\frac{\lambda_i - 100}{3200 - 100}, \; 0, \; 1\right)
@@ -579,14 +580,14 @@ $$
 
 **优缺点：**
 
-| | |
-|---|---|
-| ✅ | 高频保持分辨率（近距离 token 不受影响） |
-| ✅ | 低频得到充分压缩（远距离不 OOD） |
-| ✅ | 过渡区平滑，避免突变 |
-| ✅ | 只需极少量微调（~400 步） |
-| ✅ | 目前效果最好的方法之一 |
-| ❌ | 超参数较多 (alpha, beta, scale_factor) |
+|     | 　　　　　　　　　　　　　　　　　　　　|
+| -----| -----------------------------------------|
+| ✅   | 高频保持分辨率（近距离 token 不受影响） |
+| ✅   | 低频得到充分压缩（远距离不 OOD）　　　　|
+| ✅   | 过渡区平滑，避免突变　　　　　　　　　　|
+| ✅   | 只需极少量微调（~400 步）　　　　　　　 |
+| ✅   | 目前效果最好的方法之一　　　　　　　　　|
+| ❌   | 超参数较多 (alpha, beta, scale_factor)　|
 
 ### 6.5 扩大 theta_base（LLaMA 3 / Code LLaMA 风格）
 
