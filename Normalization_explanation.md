@@ -10,10 +10,10 @@
 
 ### 1. LayerNorm (LN) 与 RMSNorm (RMSN) 的定义
 
-设单样本特征向量为 $x \in \mathbb{R}^{d}$ ，其各个分量为 $x_{i}$ （其中 $i \in \{1, 2, \dots, d\}$）。
+设单样本特征向量为 $x \in \mathbb{R}^{d}$ ，其各个分量为 $x_{i}$ （其中 $i \in \{1, 2, \dots, d\}$ ）。
 
 #### LayerNorm 的数学公式
-LayerNorm 计算特征向量的均值 $\mu$ 与方差 $\sigma^{2}$：
+LayerNorm 计算特征向量的均值 $\mu$ 与方差 $\sigma^{2}$ ：
 
 $$
 \mu = \frac{1}{d} \sum_{j=1}^{d} x_{j}
@@ -29,7 +29,7 @@ $$
 \text{LN}(x)_{i} = \frac{x_{i} - \mu}{\sqrt{\sigma^{2} + \epsilon}} \cdot \gamma_{i} + \beta_{i}
 $$
 
-其中 $\gamma$ 与 $\beta$ 分别为可学习的缩放与偏置向量，$\epsilon$ 为防止除以 0 的极小常数。
+其中 $\gamma$ 与 $\beta$ 分别为可学习的缩放与偏置向量， $\epsilon$ 为防止除以 0 的极小常数。
 
 #### RMSNorm 的数学公式
 RMSNorm 去掉了均值偏移的操作，仅除以均方根（Root Mean Square）：
@@ -57,7 +57,7 @@ $$
 y_{i} = \frac{x_{i}}{\text{RMS}(x)}
 $$
 
-其中（先忽略 $\epsilon$）：
+其中（先忽略 $\epsilon$ ）：
 
 $$
 \text{RMS}(x) = \sqrt{\frac{1}{d} \sum_{k=1}^{d} x_{k}^{2}}
@@ -151,7 +151,7 @@ $$
 
 权重缩放不变性可以防止权重由于某些方向的剧烈更新而导致激活值尺度失控。
 
-假设某一层计算为线性映射后接归一化层。输入向量为 $a$ ，权重矩阵为 $W$。
+假设某一层计算为线性映射后接归一化层。输入向量为 $a$ ，权重矩阵为 $W$ 。
 线性输出为：
 
 $$
@@ -164,7 +164,7 @@ $$
 z' = W' a = c z
 $$
 
-我们计算 $z'$ 的均方根 $\text{RMS}(z')$：
+我们计算 $z'$ 的均方根 $\text{RMS}(z')$ ：
 
 $$
 \text{RMS}(z') = \sqrt{\frac{1}{d} \sum_{j=1}^{d} (c z_{j})^{2}} = c \cdot \sqrt{\frac{1}{d} \sum_{j=1}^{d} z_{j}^{2}} = c \cdot \text{RMS}(z)
