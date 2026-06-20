@@ -14,17 +14,17 @@
 - **GELU 与 Swish 的形状等价性**：板书右侧指出， $\text{Swish}(x) = x \cdot \sigma(\beta x)$ 与 $\text{GELU}(x) = x \cdot \Phi(x)$ 在图形上“基本一样”，可通过选择适当的缩放因子进行互相代替，且 SwiGLU 在实际实验中表现更优。
 
 ### 2. 门控激活机制 GLU（板书左下区域）
-- **非门控结构（xLU）**：
-  
-  $$
-  \text{xLU}(x) = \text{Act}(x \cdot W_1) \cdot W_2
-  $$
-  
-- **门控结构（xGLU）**：
-  
-  $$
-  \text{xGLU}(x) = (\text{Act}(x \cdot W_1) \otimes (x \cdot V)) \cdot W_2
-  $$
+**非门控结构（xLU）**
+
+$$
+\text{xLU}(x) = \text{Act}(x \cdot W_1) \cdot W_2
+$$
+
+**门控结构（xGLU）**
+
+$$
+\text{xGLU}(x) = (\text{Act}(x \cdot W_1) \otimes (x \cdot V)) \cdot W_2
+$$
   
   其中 $\otimes$ 代表逐元素相乘（Element-wise Product）。输入特征 $x$ 一分为二，一条通道进行非线性激活 $\text{Act}(x \cdot W_1)$ （作为门控信号），另一条通道进行线性映射 $x \cdot V$ ，两者相乘后经过 $W_2$ 投影输出。
 
@@ -117,29 +117,29 @@ $$
 
 我们通过**匹配原点处（ $x = 0$ ）的导数**来求解缩放常数 $k$。
 
-1. **计算正态 CDF $\Phi(x)$ 在 $x = 0$ 处的导数**：
-   
-   $$
-   \Phi'(0) = \phi(0) = \frac{1}{\sqrt{2\pi}} \approx 0.398942
-   $$
-   
-2. **计算近似函数 $\sigma(k \cdot x)$ 在 $x = 0$ 处的导数**：
-   
-   $$
-   \frac{d}{dx} [\sigma(k \cdot x)] = k \cdot \sigma(k \cdot x)(1 - \sigma(k \cdot x))
-   $$
-   
-   在 $x = 0$ 处， $\sigma(0) = 0.5$ ，代入得：
-   
-   $$
-   \frac{d}{dx} [\sigma(k \cdot x)]\Big|_{x=0} = k \cdot 0.5 \cdot (1 - 0.5) = 0.25 k
-   $$
-   
-3. **匹配两者的导数**：
-   
-   $$
-   0.25 k = \frac{1}{\sqrt{2\pi}} \implies k = \frac{4}{\sqrt{2\pi}} \approx 1.595769
-   $$
+**1. 计算正态 CDF $\Phi(x)$ 在 $x = 0$ 处的导数**
+
+$$
+\Phi'(0) = \phi(0) = \frac{1}{\sqrt{2\pi}} \approx 0.398942
+$$
+
+**2. 计算近似函数 $\sigma(k \cdot x)$ 在 $x = 0$ 处的导数**
+
+$$
+\frac{d}{dx} [\sigma(k \cdot x)] = k \cdot \sigma(k \cdot x)(1 - \sigma(k \cdot x))
+$$
+
+在 $x = 0$ 处， $\sigma(0) = 0.5$ ，代入得：
+
+$$
+\frac{d}{dx} [\sigma(k \cdot x)]\Big|_{x=0} = k \cdot 0.5 \cdot (1 - 0.5) = 0.25 k
+$$
+
+**3. 匹配两者的导数**
+
+$$
+0.25 k = \frac{1}{\sqrt{2\pi}} \implies k = \frac{4}{\sqrt{2\pi}} \approx 1.595769
+$$
    
    利用该 $k$ 值，在原点附近的近似度非常高。
 
@@ -242,21 +242,23 @@ $$
 
 其中 $W_1 \in \mathbb{R}^{d \times d_{\text{ff}}}$， $W_2 \in \mathbb{R}^{d_{\text{ff}} \times d}$。
 
-1. **参数量 (Parameters)**：
-   
-   $$
-   P_{\text{std}} = d \cdot d_{\text{ff}} + d_{\text{ff}} \cdot d = 2 \cdot d \cdot d_{\text{ff}}
-   $$
-   
-2. **计算量 (FLOPs，以单 Token 计算)**：
-   - 投影分支 $x \cdot W_1$：输入 $[1 \times d]$ 与权重 $[d \times d_{\text{ff}}]$ 矩阵相乘，计算量为 $2 \cdot d \cdot d_{\text{ff}}$ FLOPs。
-   - 激活函数 $\text{Act}(\cdot)$：逐元素操作，计算量为 $O(d_{\text{ff}})$ （在大模型中通常忽略不计）。
-   - 输出投影 $W_2$：输入 $[1 \times d_{\text{ff}}]$ 与权重 $[d_{\text{ff}} \times d]$ 矩阵相乘，计算量为 $2 \cdot d \cdot d_{\text{ff}}$ FLOPs。
-   - **总计算量**：
-     
-     $$
-     F_{\text{std}} \approx 4 \cdot d \cdot d_{\text{ff}}
-     $$
+**1. 参数量 (Parameters)**
+
+$$
+P_{\text{std}} = d \cdot d_{\text{ff}} + d_{\text{ff}} \cdot d = 2 \cdot d \cdot d_{\text{ff}}
+$$
+
+**2. 计算量 (FLOPs，以单 Token 计算)**
+
+- 投影分支 $x \cdot W_1$：输入 $[1 \times d]$ 与权重 $[d \times d_{\text{ff}}]$ 矩阵相乘，计算量为 $2 \cdot d \cdot d_{\text{ff}}$ FLOPs。
+- 激活函数 $\text{Act}(\cdot)$：逐元素操作，计算量为 $O(d_{\text{ff}})$ （在大模型中通常忽略不计）。
+- 输出投影 $W_2$：输入 $[1 \times d_{\text{ff}}]$ 与权重 $[d_{\text{ff}} \times d]$ 矩阵相乘，计算量为 $2 \cdot d \cdot d_{\text{ff}}$ FLOPs。
+
+**总计算量**
+
+$$
+F_{\text{std}} \approx 4 \cdot d \cdot d_{\text{ff}}
+$$
 
 #### 方案 B：SwiGLU FFN (无偏置)
 
@@ -266,39 +268,41 @@ $$
 \text{FFN}_{\text{SwiGLU}}(x) = \left( \text{Swish}(x \cdot W_1) \otimes (x \cdot V) \right) \cdot W_2
 $$
 
-其中 $W_1 \in \mathbb{R}^{d \times d_{\text{ff\_gated}}}$， $V \in \mathbb{R}^{d \times d_{\text{ff\_gated}}}$， $W_2 \in \mathbb{R}^{d_{\text{ff\_gated}} \times d}$。
+其中 $W_1 \in \mathbb{R}^{d \times d_{\text{ff,gated}}}$， $V \in \mathbb{R}^{d \times d_{\text{ff,gated}}}$， $W_2 \in \mathbb{R}^{d_{\text{ff,gated}} \times d}$。
 
-1. **参数量 (Parameters)**：
-   
-   $$
-   P_{\text{SwiGLU}} = d \cdot d_{\text{ff\_gated}} + d \cdot d_{\text{ff\_gated}} + d_{\text{ff\_gated}} \cdot d = 3 \cdot d \cdot d_{\text{ff\_gated}}
-   $$
-   
-2. **计算量 (FLOPs，以单 Token 计算)**：
-   - 投影分支 $x \cdot W_1$ 与 $x \cdot V$：两次矩阵相乘，共 $2 \cdot (2 \cdot d \cdot d_{\text{ff\_gated}}) = 4 \cdot d \cdot d_{\text{ff\_gated}}$ FLOPs。
-   - 逐元素操作（Swish 激活与逐元素相乘 $\otimes$）：计算量为 $O(d_{\text{ff\_gated}})$ （忽略不计）。
-   - 输出投影 $W_2$：计算量为 $2 \cdot d_{\text{ff\_gated}} \cdot d$ FLOPs。
-   - **总计算量**：
-     
-     $$
-     F_{\text{SwiGLU}} \approx 6 \cdot d \cdot d_{\text{ff\_gated}}
-     $$
+**1. 参数量 (Parameters)**
+
+$$
+P_{\text{SwiGLU}} = d \cdot d_{\text{ff,gated}} + d \cdot d_{\text{ff,gated}} + d_{\text{ff,gated}} \cdot d = 3 \cdot d \cdot d_{\text{ff,gated}}
+$$
+
+**2. 计算量 (FLOPs，以单 Token 计算)**
+
+- 投影分支 $x \cdot W_1$ 与 $x \cdot V$：两次矩阵相乘，共 $2 \cdot (2 \cdot d \cdot d_{\text{ff,gated}}) = 4 \cdot d \cdot d_{\text{ff,gated}}$ FLOPs。
+- 逐元素操作（Swish 激活与逐元素相乘 $\otimes$）：计算量为 $O(d_{\text{ff,gated}})$ （忽略不计）。
+- 输出投影 $W_2$：计算量为 $2 \cdot d_{\text{ff,gated}} \cdot d$ FLOPs。
+
+**总计算量**
+
+$$
+F_{\text{SwiGLU}} \approx 6 \cdot d \cdot d_{\text{ff,gated}}
+$$
 
 #### 结论：参数与算力等价转换 (缩小 $W_1$ 以换 $V$)
 
 若要使 SwiGLU FFN 的参数量和计算量与传统 FFN 保持一致：
 
-1. **参数量一致**：
-   
-   $$
-   P_{\text{SwiGLU}} = P_{\text{std}} \implies 3 \cdot d \cdot d_{\text{ff\_gated}} = 2 \cdot d \cdot d_{\text{ff}} \implies d_{\text{ff\_gated}} = \frac{2}{3} d_{\text{ff}}
-   $$
-   
-2. **计算量一致**：
-   
-   $$
-   F_{\text{SwiGLU}} = F_{\text{std}} \implies 6 \cdot d \cdot d_{\text{ff\_gated}} = 4 \cdot d \cdot d_{\text{ff}} \implies d_{\text{ff\_gated}} = \frac{2}{3} d_{\text{ff}}
-   $$
+**1. 参数量一致**
+
+$$
+P_{\text{SwiGLU}} = P_{\text{std}} \implies 3 \cdot d \cdot d_{\text{ff,gated}} = 2 \cdot d \cdot d_{\text{ff}} \implies d_{\text{ff,gated}} = \frac{2}{3} d_{\text{ff}}
+$$
+
+**2. 计算量一致**
+
+$$
+F_{\text{SwiGLU}} = F_{\text{std}} \implies 6 \cdot d \cdot d_{\text{ff,gated}} = 4 \cdot d \cdot d_{\text{ff}} \implies d_{\text{ff,gated}} = \frac{2}{3} d_{\text{ff}}
+$$
    
 
 > [!TIP]
@@ -307,13 +311,13 @@ $$
 > 按照上面的推导，为了保持相同的计算开销，SwiGLU 结构的隐层维度应当设为：
 > 
 > $$
-> d_{\text{ff\_gated}} = \frac{2}{3} \cdot 4d = \frac{8}{3}d
+> d_{\text{ff,gated}} = \frac{2}{3} \cdot 4d = \frac{8}{3}d
 > $$
 > 
 > 比如在 LLaMA-7B 中，模型隐向量维度 $d = 4096$ 。按比例计算：
 > 
 > $$
-> d_{\text{ff\_gated}} = \frac{8}{3} \times 4096 \approx 10922.67
+> d_{\text{ff,gated}} = \frac{8}{3} \times 4096 \approx 10922.67
 > $$
 > 
 > LLaMA 实际为了显存对齐，将该维度向上取整到 256 的倍数，最终定为 **$11008$** （即 $43 \times 256$ ）。
