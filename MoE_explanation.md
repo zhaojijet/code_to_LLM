@@ -918,6 +918,32 @@ d(aux_loss)/d(P_i^s) = α × f_i^s / B    （Sequence-level，s=样本索引）
      每个样本只根据自身的专家使用情况调整路由器
 ```
 
+**核心问答：既然梯度结果只与 f_i 有关，为什么 loss 还要计算 P_i？**
+
+* **问**：从上面的推导可见，对 `P_i` 求偏导的计算结果只与 `f_i` 有关（与 `P_i` 的具体数值无关）。那在计算 Loss 时，为什么不直接只计算 `f_i`，非要写成 `P_i · f_i` 呢？
+* **答**：这关乎 **“可微性（Differentiability）”** 与 **“梯度回传（Gradient Flow）”** 的核心逻辑：
+
+1. **不可微的 `f_i` 与可微的 `P_i`**：
+   * `f_i` 是通过 `argmax` 或 `Top-K` 这种**离散选择和计数**操作计算出来的（表示“有哪些 token 选了该专家”）。在数学上，**离散操作是不可导的**（其梯度处处为 0）。如果我们直接用 `f_i` 构造 Loss，梯度在反向传播时将无法流回 Gate 的权重参数。
+   * `P_i` 是路由 Softmax 的概率（门控输出的分数），它是**连续可微的**，能够承载梯度并将其传递给 Gate 参数。
+
+2. **梯度回传的唯一桥梁**：
+   在计算反向传播时，我们对不可导 `f_i` 实施阻断梯度（stop gradient / `.detach()`），只对 `P_i` 计算梯度。根据链式法则，Loss 对 Gate 参数 `W_gate` 的偏导为：
+   ```text
+   d(aux_loss) / d(W_gate) = Σ [ d(aux_loss)/d(P_i) · d(P_i)/d(W_gate) ]
+                           = Σ [ (α · f_i) · d(P_i)/d(W_gate) ]
+   ```
+   如果 Loss 的公式里不引入可微项 `P_i`（例如直接定义 `L = α · Σ f_i^2`），则第一项 `d(aux_loss)/d(P_i)` 不存在，整个梯度链就会直接断开，模型参数无法得到任何调整。
+
+3. **梯度的物理机制如何起效？**
+   在梯度下降中，权重更新方向为：
+   ```text
+   W_gate_new = W_gate - η · d(aux_loss)/d(W_gate)
+              = W_gate - η · α · Σ [ f_i · d(P_i)/d(W_gate) ]
+   ```
+   * **压低过载专家**：如果专家 `i` 被选次数过多（`f_i` 很大），会产生一个很大的梯度拉低该专家的概率 `P_i`。
+   * **抬高闲置专家**：如果专家 `i` 闲置（`f_i = 0`），该专家对应的偏导数 `d(aux_loss)/d(P_i) = 0`，不会主动承受减小概率的惩罚。而由于 Softmax 所有专家概率之和为 1，其他过载专家的概率被压低时，闲置专家的概率 `P_i` 就会被动被抬高，从而在随后的训练中获得被选中的机会。
+
 #### 5.4.2 反面：Sequence-level 的劣势
 
 Sequence-level 并非完美方案，在以下方面反而不如 Token-level：
@@ -1629,6 +1655,23 @@ def moe_infer(self, x, flat_expert_indices, flat_expert_weights):
 
     return expert_cache
 ```
+
+#### 6.2.1 核心变量与计算原理解析
+
+为了避免在训练阶段使用的 `repeat_interleave` 和掩码（Mask）导致的内存膨胀和计算碎片化，推理阶段采用了 **分拣（Sort & Dispatch）** 方案。该方案的核心在于：**通过对专家索引进行排序，将发往同一个专家的所有 Token 整理到连续的内存区域，实现批量计算，最后用 `scatter_add_` 还原并累加。**
+
+以下是该算法中核心变量的物理意义与设计目的：
+
+| 变量/操作 | 物理意义与计算逻辑 | 为什么这样设计？ |
+| :--- | :--- | :--- |
+| **Slot（插槽）** | 一个 Token 选中 `K` 个专家，共产生 `T * K` 个分配插槽。输入 `flat_expert_indices` 和 `flat_expert_weights` 的长度均为 `T * K`。 | 插槽索引 `s`（范围在 `0` 到 `T * K - 1` 之间）与原始 Token 索引 `t` 的对应关系为：`t = s // K`。 |
+| **`idxs`** | `flat_expert_indices.argsort()` <br> 排序后的插槽在原数组中的位置。 | **核心分拣步骤**。排序后，所有分配给 Expert 0 的插槽排最前，接着是 Expert 1，以此类推。`idxs[i]` 存储的是“排序后第 `i` 个位置的 Token 在原始 Slot 中的索引”。 |
+| **`tokens_per_expert`** | `flat_expert_indices.bincount().cumsum(0)` <br> 每个专家分配到的 Token 总数的**累积和**。 | **专家数据的切分点（Slicing Points）**。例如 `cumsum` 为 `[1, 3, 4, 6]`，意味着：<br>- Expert 0 的数据在排序后数组的 `[0:1]` 范围；<br>- Expert 1 的数据在 `[1:3]` 范围；<br>- Expert 2 在 `[3:4]`，Expert 3 在 `[4:6]`。 |
+| **`token_idxs`** | `idxs // K` <br> 将排序后的 Slot 索引还原为原始 Token 索引。 | `idxs` 存储的是 Slot 索引（范围 `0` 至 `T * K - 1`），但我们需要从隐藏状态 `x`（大小为 `[T, D]`）中取出原始 Token，因此必须整除 `K`，将其还原为范围 `0` 至 `T - 1` 的 Token 索引。 |
+| **`exp_token_idx`** | `token_idxs[start_idx:end_idx]` <br> 当前专家 `i` 负责的所有 Token 的原始索引。 | 这是一个长度为“该专家分到的 Token 数”的 1D Tensor，用于在 `x` 中索引对应的 Token 向量。 |
+| **`expert_tokens`** | `x[exp_token_idx]` <br> 取出当前专家要处理的 Token 特征矩阵。 | 形状为 `[Batch_for_Expert_i, D]`。将不连续的 Token 收集为连续内存，实现高效的批处理（Batching）。 |
+| **加权操作** | `flat_expert_weights[idxs[start_idx:end_idx]]` <br> 获取当前批次 Token 对应的路由权重。 | 每个 Slot 的路由权重存储在 `flat_expert_weights` 中。因为我们对 Slot 进行了排序，所以必须通过 `idxs[start_idx:end_idx]` 找到对应的原始 Slot 索引来提取权重。 |
+| **`scatter_add_`** | 将加权后的专家输出 `expert_out` 累加回 `expert_cache` 中对应的原始 Token 位置。 | 由于一个 Token 会被分发给多个专家（如 `K = 2`），因此不同专家处理完该 Token 的输出必须在原始位置进行**累加**，`scatter_add_` 能够高效且并行的实现这一原子累加操作。 |
 
 **分拣方案可视化（沿用 5.6 数据：T=3，K=2，N=4）**：
 
