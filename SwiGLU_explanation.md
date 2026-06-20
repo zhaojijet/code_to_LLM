@@ -360,4 +360,47 @@ $$
 3. **自适应的软门控**：
    在门控机制中， $\text{Swish}(x W_1)$ 的输出范围在大约 $[-0.09, \infty)$ 。当门控分支响应为负时，它不是直接将其抹平，而是根据其相对重要性分配非常微弱的负号响应，这种自适应能力大幅提高了网络的泛化上限。
 
+---
+
+## 五、 工程实践：“且有算子代替” 与融合算子优化
+
+在板书第 3 部分的手写板书中，提到关于 Swish over GELU 的观点：“基本一样 in 图形，且有算子代替，实验数据也更优”。这在深度学习与大语言模型的工程落地中有着极其深远的实际意义。
+
+### 1. 基础激活函数的“算子平替”
+
+在 PyTorch、TensorFlow 等主流深度学习框架的底层，激活函数的执行并非通过 Python 循环或基础张量乘法一步步计算，而是通过高度优化的底层 C++/CUDA 算子（Operator）实现的：
+- **GELU 算子**：框架中内置了 `torch.nn.GELU` （底层由 CUDA 编写），既包含基于误差函数的精确版，也包含高效率的 Sigmoid 近似版。
+- **Swish/SiLU 算子**：在 PyTorch 中内置为 `torch.nn.SiLU`（即 $\beta = 1$ 的 Swish），同样经过了底层 CUDA 算子的优化。
+
+这解释了板书中的 **“且有算子代替”**：由于两者的数学图像高度重合，且框架内均有现成的、极高硬件利用率的 CUDA 激活算子支撑，在编写模型代码时可以十分简单地实现一键替换（即在代码中将激活函数直接从 `GELU` 换成 `SiLU`），而无需开发者去手写复杂的 CUDA 底层代码。
+
+---
+
+### 2. SwiGLU 的“融合算子（Fused Kernels）”优化
+
+虽然 SwiGLU 在数学表征能力上极其优异，但在实际工程中直接以 naive 形式（如分步进行投影、激活计算、逐元素相乘）实现时，会遇到严重的硬件执行瓶颈：
+
+#### 显存带宽受限（Memory-bandwidth Bound）痛点
+
+在传统的 FFN 计算中，数据在 GPU 上的流转过程如下：
+
+$$
+x \xrightarrow{\text{Read}} \text{GPU SRAM} \xrightarrow{\text{Proj W}_1} x \cdot W_1 \xrightarrow{\text{Write}} \text{HBM (显存)} \xrightarrow{\text{Read}} \text{SRAM} \xrightarrow{\text{Swish}} \text{Swish}(x \cdot W_1) \xrightarrow{\text{Write}} \text{HBM}
+$$
+
+由于 SwiGLU 前向传播涉及到双投影分支与乘积：
+
+$$
+\text{SwiGLU}(x) = \text{Swish}(x \cdot W_1) \otimes (x \cdot V)
+$$
+
+如果直接写为分步操作，GPU 将需要多次将中间激活值（例如 $x \cdot W_1$ 和 $x \cdot V$ ）从片上写回全局显存（HBM），再重新读取出来做逐元素乘法 $\otimes$ 。这会产生极高的显存带宽存取开销（IO Overhead），导致硬件实际运行速度远慢于理论计算时间。
+
+#### 融合算子（Fused Kernel）解决方案
+
+为了解决上述问题，业界的主流大模型骨干网络框架（如 Megatron-LM、Triton、vLLM、TensorRT-LLM）均采用 **融合算子（Fused Operators）**：
+- **融合逻辑**：将两个投影分支的计算结果直接保留在 GPU 的片上高速缓存（SRAM/Shared Memory）中，当即在 SRAM 中执行 Swish 激活计算和逐元素相乘 $\otimes$ ，最后仅将相乘后的最终门控结果写回 HBM 显存。
+- **性能增益**：通过将投影、激活与乘积操作融合进同一个 GPU Kernel，消除了中间激活值对显存的反复擦写，从而在**参数量和计算量等效降低（通过将隐层通道缩窄至原来的 $2/3$ ）**的前提下，让 SwiGLU FFN 的硬件运行速度和显存占用表现甚至超越了传统的 FFN。
+
+
 
