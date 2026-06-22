@@ -20,34 +20,35 @@
 
 **左侧：初始化阶段 (Initialization)**
 
-*   **计算需要合并的次数**：
+*   **计算需要合并的次数** `num_merges`（以 $M$ 表示，其中 $|V|$ 为目标词表大小）：
 
 $$
-\text{num\_merges} = \text{vocab\_size} - 256
+M = |V| - 256
 $$
 
-*   **将输入文本使用 UTF-8 编码转化为字节序列，并转化为整数 Token 列表**：
+*   **将输入文本使用 UTF-8 编码转化为字节序列，并转化为整数 Token 列表** `tokens`：
 
-$$
-\text{tokens} = \text{list}(\text{data.encode('utf-8')})
-$$
+```python
+tokens = list(data.encode('utf-8'))
+```
 
 *   **声明数据结构与初始化**：
     声明两个核心数据结构：`pair_counts`（使用最大堆 Heap 维护，大小约 1 万）和 `pair_positions`（映射到位置列表的指针）。遍历相邻 Token，统计所有相邻 Pair 的频数与其出现的索引位置（`pos`）。
 
 **右侧：合并阶段 (Merge Loop)**
 
-循环执行 $\text{num\_merges}$ 次合并：
+循环执行 $M$ （即 `num_merges`）次合并：
 
 1. 从最大堆 `pair_counts` 中弹出当前频数最高的相邻字节对 `pair`。
-2. 产生新的 Token ID：
+2. 产生新的 Token ID（以 $T_{\text{new}}$ 表示）：
 
 $$
-\text{new\_token} = 256 + i
+T_{\text{new}} = 256 + i
 $$
 
-3. 记录合并规则：将 `pair` 映射为 `new\_token` 。
-4. 遍历该 `pair` 出现的所有位置 `pos`，在 Token 链中将该相邻对替换为 `new\_token`。
+   在代码中对应的变量为 `new_token`。
+3. 记录合并规则：将 `pair` 映射为 `new_token`。
+4. 遍历该 `pair` 出现的所有位置 `pos`，在 Token 链中将该相邻对替换为 `new_token`。
 5. **局部更新**：修正 Token 链（双向链表），减少旧 Pair 的计数（`pair_counts[old_pair] -= 1`），增加新生成 Pair 的计数（`pair_counts[new_pair] += 1`），并实时修复位置索引表 `pair_positions`。这避免了全局扫描，实现了极高的运算效率。
 
 ---
