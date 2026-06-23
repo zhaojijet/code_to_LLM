@@ -4,6 +4,8 @@
 # Helper/scratch scripts
 check_math.py
 process_walkthrough.py
+test*.py
+__pycache__
 
 # OS files
 .DS_Store
