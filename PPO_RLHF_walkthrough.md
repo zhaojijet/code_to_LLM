@@ -569,7 +569,85 @@ RLHF 阶段以“极难收敛、极其敏感”著称，以下是三大典型失
 
 ---
 
-## 六、PPO 与 GRPO 的深层对比
+## 六、主流 PPO-RLHF 与 MiniMind 极简 PPO 实现对比
+
+在训练大模型的偏好对齐时，工业界主流的 PPO-RLHF（如 OpenRLHF, TRL, DeepSpeed-Chat）与 MiniMind 的极简 PPO 实现存在着核心的技术差异。这些差异直接影响了显存占用、训练稳定性和模型最终的表达能力。
+
+### 6.1 核心设计对比
+
+二者的核心差异主要体现在 **KL 散度惩罚的引入位置** 以及 **价值网络（Critic）的拟合目标**。
+
+| 对比维度 | 工业界主流 PPO-RLHF | MiniMind 极简 PPO 实现 |
+|---|---|---|
+| **KL 惩罚机制** | **奖励级惩罚 (Reward-level)**。KL 散度在 Rollout 阶段即作为 Token 级的即时负奖励融入到序列奖励中。 | **Loss 级惩罚 (Loss-level)**。Rollout 阶段的即时奖励仅含外部 Reward，KL 作为正则化项直接加在 Actor Loss 中。 |
+| **即时奖励定义** | 中间步为负 KL，最后一步加上外部 Reward。 | 中间步为 0，最后一步为外部 Reward。 |
+| **Critic 拟合目标** | 包含 KL 惩罚在内的混合目标回报 $ \hat{R}(t) $ 。 | 纯外部 Reward 传播回来的目标回报（不含 KL）。 |
+| **Actor 损失函数** | 单纯的 PPO-Clip 代理损失（KL 已通过优势 $ \hat{A}(t) $ 隐式传导）。 | PPO-Clip 代理损失 + 显式 KL 惩罚项。 |
+| **信用分配粒度** | **Token 级信用分配**。能精确惩罚导致偏离的特定 Token。 | **句级/整体正则化**。无法对具体偏离 Token 进行差异化定位。 |
+
+---
+
+### 6.2 数学与计算细节深度解析
+
+#### 1. KL 散度应用机制
+
+* **主流 PPO-RLHF 的奖励级设计**
+
+在主流实现中，每个 Token 步 $ t $ 的即时奖励 $ r(t) $ 定义为：
+
+$$
+r(t) = -\beta \cdot \left[ \log \pi_\theta(a(t) \mid s(t)) - \log \pi^{\text{ref}}(a(t) \mid s(t)) \right] + \text{External\_Reward} \cdot \mathbb{I}(t = T)
+$$
+
+这里 $ \beta $ 是 KL 惩罚系数。在这个设定下，如果模型在某一步输出了一个违背 SFT 习惯的偏离 Token，该步的 $ r(t) $ 会瞬间变成一个很大的负值。由于 GAE 优势计算：
+
+$$
+\hat{A}(t) = \delta(t) + \gamma\lambda \hat{A}(t+1)
+$$
+
+这一负奖励会直接反映在该 Token 步的优势值 $ \hat{A}(t) $ 上。在 Actor 优化时，由于 PPO-Clip 损失倾向于压低优势值为负的动作概率，这能**极其精准地纠正导致偏离的那个具体 Token**。
+
+* **MiniMind 的 Loss 级设计**
+
+在 MiniMind 的实现中，Rollout 阶段的 `token_rewards` 只有在最后一个 Token 处加上了外部打分 $ R $，其余中间步均为 0。GAE 优势 $ \hat{A}(t) $ 和拟合目标 $ \hat{R}(t) $ 纯粹由外部 $ R $ 的折现值决定。
+KL 惩罚是通过在 Actor Loss 中显式相加实现的：
+
+$$
+L^{\text{Actor}} = L^{\text{CLIP}} + \beta \cdot D_{\text{KL}}(\pi_\theta \parallel \pi^{\text{ref}})
+$$
+
+其中 $ D_{\text{KL}}(\pi_\theta \parallel \pi^{\text{ref}}) $ 在每一步计算为：
+
+$$
+D_{\text{KL}} = \exp\left(\log \pi^{\text{ref}} - \log \pi_\theta\right) - \left(\log \pi^{\text{ref}} - \log \pi_\theta\right) - 1.0
+$$
+
+这种设计意味着在进行反向传播时，KL 的约束力是作为全局正则化均摊在所有 Token 上的。它无法像优势函数那样，通过单步误差 $ \delta(t) $ 敏锐地为每个 Token 的“偏离贡献度”进行精准信用分配。
+
+#### 2. Value Model (Critic) 的拟合难易度
+
+* **主流 PPO-RLHF**：
+  Critic 拟合的目标 $ \hat{R}(t) $ 包含了 KL 惩罚。由于策略 $ \pi_\theta $ 在训练过程中不断变化，每个 Token 上的 KL 散度也随之快速改变。这导致 Critic 的拟合目标在不断发生剧烈抖动（被称为“移动靶”问题），极大增加了 Value 网络的训练难度，极易导致 Value Loss 无法收敛，需要更高的 Critic 学习率（非对称 LR）和价值截断（Value Clipping）来稳定。
+* **MiniMind**：
+  Critic 只拟合纯外部 Reward，完全不受训练中 KL 散度波动的干扰。这使得 Critic 的学习曲线非常平滑，预测难度大幅下降，极佳地稳定了小模型训练。
+
+---
+
+### 6.3 优缺点与应用场景总结
+
+* **主流 PPO-RLHF 方案**
+  * **优点**：符合严谨的 MDP 建模，能够提供细粒度的 Token 级对齐信号。通过把 KL 放入优势函数，使模型能准确辨别哪些 Token 带来了偏好提升，哪些 Token 导致了语义偏离，因而对复杂长文本生成的对齐精度极高。
+  * **缺点**：Critic 拟合困难，显存开销较大（需要保留 Reference 和 Policy 的完整激活以计算每一步的 KL），调参敏感度高。
+  * **适用场景**：百亿级以上大模型的标准 RLHF 对齐，尤其是需要精细语言风格控制、安全性对齐等开放式生成任务。
+
+* **MiniMind 极简 PPO 方案**
+  * **优点**：设计极简化，将 KL 降维到 Loss 层正则化。极大地减轻了 Critic 的建模负担，不易发生 Critic 崩溃；同时省去了在 Rollout 阶段对复杂时序 KL 的跟踪和处理，具有更高的计算和存储性价比。
+  * **缺点**：缺乏 Token 级别的精准惩罚机制。如果生成文本中只在某处出现了一个“Reward Hacker Token”（比如狂刷标点），Loss 级的 KL 会粗暴地将所有位置的 Token 概率均等地拉回 SFT，影响了模型充分探索高 Reward 路径的上限。
+  * **适用场景**：轻量级大模型的快速对齐实验、有明确规则引导（如思维链 COT 格式约束、长度惩罚）的推理微调任务。
+
+---
+
+## 七、PPO 与 GRPO 的深层对比
 
 GRPO (Group Relative Policy Optimization) 是 DeepSeek 提出的一种改进，旨在解决大模型 RL 训练中 Value Model 带来的计算和显存开销。
 
@@ -633,7 +711,7 @@ $$
 
 ---
 
-## 七、工业界多模型显存物理分布与 LoRA 共享设计
+## 八、工业界多模型显存物理分布与 LoRA 共享设计
 
 在物理训练中，由于涉及 4 个大模型在显卡内的共存，显存（VRAM）压力极大。业界通常采取以下两种方式来解决：
 
@@ -679,7 +757,7 @@ $$
 
 ---
 
-## 八、总结与公式速查
+## 九、总结与公式速查
 
 * **GAE 优势计算公式**：
 
