@@ -40,7 +40,7 @@ OneSearch 是首个在工业级搜索场景部署 of 生成式框架。其核心
 #### 1. 持续预训练（CPT）与多阶段监督微调（SFT）样本构造
 OneSearch 将 SFT 拆分为由易到难的三个课程化（Curriculum）阶段：
 *   **阶段一：语义内容对齐 (Semantic Alignment)**
-    *   **样本构造**：物料标题 $T_i$ 、类目属性与 SID 的映射对。
+    *   **样本构造**：物料标题 $T\_i$ 、类目属性与 SID 的映射对。
     *   **格式**：
         *   **Text-to-SID 格式**：
         ```text
@@ -134,14 +134,14 @@ $$
 
 #### 2. RL 阶段：TPMA-GRPO 信用分配与自适应剪切
 *   **在策采样轨迹 (On-Policy Rollout) 与样本构造方法**：
-在 RL 阶段，输入端直接复用 SFT 阶段的 Prompt $x_u$ （即用户画像及搜索 Query）。模型不再匹配静态的点击日志商品，而是使用当前策略模型 $\pi_{\theta}$ 在线对每个 Prompt **在策生成（Rollout）一组共 $G$ 条候选轨迹** $\{y_1, y_2, \dots, y_G\}$ 。每条轨迹包含自生成的 `<thought>` 推理链以及目标商品 SID 序列。这些自生成的轨迹将通过行为反馈函数进行打分来指导策略更新，从而从模型自身的输出中提供纠错信号。
+在 RL 阶段，输入端直接复用 SFT 阶段的 Prompt $x\_u$ （即用户画像及搜索 Query）。模型不再匹配静态的点击日志商品，而是使用当前策略模型 $\pi\_{\theta}$ 在线对每个 Prompt **在策生成（Rollout）一组共 $G$ 条候选轨迹** $\{y\_1, y\_2, \dots, y\_G\}$ 。每条轨迹包含自生成的 `<thought>` 推理链以及目标商品 SID 序列。这些自生成的轨迹将通过行为反馈函数进行打分来指导策略更新，从而从模型自身的输出中提供纠错信号。
 *   **TPMA-GRPO（令牌-位置边际优势）优化目标函数**：
 
 $$
 \mathcal{L}_{\text{TPMA}} = -\frac{1}{G} \sum_{i=1}^{G} \frac{1}{L} \sum_{t=1}^{L} \text{gate}_{i,t} \cdot \min \left( r_{i,t}(\theta) \hat{A}_{i,t}, \text{clip}(r_{i,t}(\theta), 1-\varepsilon, 1+\varepsilon) \hat{A}_{i,t} \right)
 $$
 
-其中 $G$ 为 Rollout 样本数量， $L$ 为序列长度， $r_{i,t}(\theta)$ 为当前策略与基准策略的概率比值：
+其中 $G$ 为 Rollout 样本数量， $L$ 为序列长度， $r\_{i,t}(\theta)$ 为当前策略与基准策略的概率比值：
 
 $$
 r_{i,t}(\theta) = \frac{\pi_{\theta}(o_{i,t} \mid x_u, o_{i,\lt t})}{\pi_{\theta_{\text{old}}}(o_{i,t} \mid x_u, o_{i,\lt t})}
@@ -153,14 +153,14 @@ $$
 \text{gate}_{i,t} = \prod_{j=1}^{t-1} \mathbb{I}(o_{i,j} == o_{i,j}^*)
 $$
 
-其中 $\mathbb{I}$ 是指示函数， $o_{i,j}^*$ 代表真实的 Ground-Truth Token。如果前 $t-1$ 个 Token 中存在错误，则第 $t$ 步的梯度被完全屏蔽（ $\text{gate}_{i,t} = 0$ ）。
-*   **Token 位置级边际优势 $\hat{A}_{i,t}$**：
+其中 $\mathbb{I}$ 是指示函数， $o\_{i,j}^*$ 代表真实的 Ground-Truth Token。如果前 $t-1$ 个 Token 中存在错误，则第 $t$ 步的梯度被完全屏蔽（ $\text{gate}\_{i,t} = 0$ ）。
+*   **Token 位置级边际优势 $\hat{A}\_{i,t}$**：
 
 $$
 \hat{A}_{i,t} = R_{i, \ge t} - \bar{R}_{\ge t}
 $$
 
-其中 $R_{i, \ge t}$ 是第 $i$ 个轨迹从位置 $t$ 开始的累积奖励， $\bar{R}_{\ge t}$ 是当前组内所有轨迹在位置 $t$ 开始的平均奖励。
+其中 $R\_{i, \ge t}$ 是第 $i$ 个轨迹从位置 $t$ 开始的累积奖励， $\bar{R}\_{\ge t}$ 是当前组内所有轨迹在位置 $t$ 开始的平均奖励。
 
 ---
 
@@ -177,7 +177,7 @@ $$
 w_{i,j} = \sum_{u \in U_i \cap U_j} \sum_{v \in U_i \cap U_j} \frac{1}{\alpha + |I_u \cap I_v|}
 $$
 
-其中 $U_i$ 和 $U_j$ 分别是交互过商品 $i$ 和 $j$ 的用户集合， $I_u$ 和 $I_v$ 分别是用户 $u$ 和 $v$ 交互过的商品集合， $\alpha$ 是平滑常数。
+其中 $U\_i$ 和 $U\_j$ 分别是交互过商品 $i$ 和 $j$ 的用户集合， $I\_u$ 和 $I\_v$ 分别是用户 $u$ 和 $v$ 交互过的商品集合， $\alpha$ 是平滑常数。
 样本对输入输出格式为：
         ```text
         Input: "Anchor Item: <sid_level_1_a><sid_level_2_b><sid_level_3_c> | Match similar item:"
@@ -201,11 +201,11 @@ $$
 $$
 
 #### 2. RL/DPO 阶段：迭代偏好优化 (IPA)
-*   **在策候选采样与偏好样本对 $(q_w, q_l)$ 构造方法**：
-由于推荐系统在线只能观测到单次曝光结果，无法直接构造 DPO 所需的 $(q_w, q_l)$ 对。OneRec 采用自生成的“Self-Hard Negatives”采样构造法：
-    1. 输入历史 Prompt $x_u$ ，使用当前策略模型 $\pi_{\theta}$ 通过 **Beam Search** 算法采样生成 $M$ 个候选推荐列表序列 $\{q_1, q_2, ..., q_M\}$ 。
-    2. 使用预先训练的多目标用户行为 Reward Model $R(x_u, q_j)$ 对这些自生成的序列进行打分评估。
-    3. 提取得分最高和最低的序列对，分别作为胜出样本（Chosen $q_w$ ）和落败样本（Rejected $q_l$ ）：
+*   **在策候选采样与偏好样本对 $(q\_w, q\_l)$ 构造方法**：
+由于推荐系统在线只能观测到单次曝光结果，无法直接构造 DPO 所需的 $(q\_w, q\_l)$ 对。OneRec 采用自生成的“Self-Hard Negatives”采样构造法：
+    1. 输入历史 Prompt $x\_u$ ，使用当前策略模型 $\pi\_{\theta}$ 通过 **Beam Search** 算法采样生成 $M$ 个候选推荐列表序列 $\{q\_1, q\_2, ..., q\_M\}$ 。
+    2. 使用预先训练的多目标用户行为 Reward Model $R(x\_u, q\_j)$ 对这些自生成的序列进行打分评估。
+    3. 提取得分最高和最低的序列对，分别作为胜出样本（Chosen $q\_w$ ）和落败样本（Rejected $q\_l$ ）：
 
 $$
 q_w = \arg\max_{q_j} R(x_u, q_j), \quad q_l = \arg\min_{q_j} R(x_u, q_j)
@@ -238,20 +238,20 @@ $$
 F(d) = \lfloor \log_{\beta}(d + \epsilon) \rfloor
 $$
 
-在每个分桶内，对用户的观看时长（Play Time, $pt$ ）进行标准化作为奖励分 $R_{\text{duration}}(pt, d)$ ：
+在每个分桶内，对用户的观看时长（Play Time, $pt$ ）进行标准化作为奖励分 $R\_{\text{duration}}(pt, d)$ ：
 
 $$
 R_{\text{duration}}(pt, d) = \frac{pt - \mu_{F(d)}}{\sigma_{F(d)}}
 $$
 
-其中 $\mu_{F(d)}$ 和 $\sigma_{F(d)}$ 是时长分桶 $F(d)$ 内部所有样本观看时间的均值与标准差。
+其中 $\mu\_{F(d)}$ 和 $\sigma\_{F(d)}$ 是时长分桶 $F(d)$ 内部所有样本观看时间的均值与标准差。
 *   **梯度有界策略优化 (GBPO - Gradient-Bounded Policy Optimization) 剪切比率公式**：
 
 $$
 \mathcal{L}_{\text{GBPO}}(\theta) = -\mathbb{E} \left[ \min \left( \hat{r} \hat{A}, \text{clip}(\hat{r}, 1 - B(\theta_{\text{old}}), 1 + B(\theta_{\text{old}})) \hat{A} \right) \right]
 $$
 
-其中 $\hat{r} = \frac{\pi_{\theta}(q_w \mid x_u) / \pi_{\theta}(q_l \mid x_u)}{\pi_{\theta_{\text{old}}}(q_w \mid x_u) / \pi_{\theta_{\text{old}}}(q_l \mid x_u)}$ ，梯度边界定义为：
+其中 $\hat{r} = \frac{\pi\_{\theta}(q\_w \mid x\_u) / \pi\_{\theta}(q\_l \mid x\_u)}{\pi\_{\theta\_{\text{old}}}(q\_w \mid x\_u) / \pi\_{\theta\_{\text{old}}}(q\_l \mid x\_u)}$ ，梯度边界定义为：
 
 $$
 B(\theta_{\text{old}}) = \alpha \cdot \left\| \nabla_{\theta_{\text{old}}} \log \frac{\pi_{\theta_{\text{old}}}(q_w \mid x_u)}{\pi_{\theta_{\text{old}}}(q_l \mid x_u)} \right\|_2
@@ -347,9 +347,9 @@ OpenOneRec 是快手开源的搜推大模型，其核心在于如何统一多任
 
 #### 3. Post-Training RL 对齐与在策蒸馏阶段 (On-Policy Distillation, OPD)
 *   **在策轨迹采样 (On-Policy Sampling) 与输入样本构造方法**：
-在 OPD 阶段，训练样本**仅包含 Prompt 集合 $\mathcal{D}_{\text{prompts}}$ ，没有静态的目标 Target 文本**。
+在 OPD 阶段，训练样本**仅包含 Prompt 集合 $\mathcal{D}\_{\text{prompts}}$ ，没有静态的目标 Target 文本**。
 该 Prompt 集合通过对推荐历史序列（70% 推荐行为 Log）与通用语言能力语料（20% 密集多模态描述，10% 自然语言推理任务 Prompt）进行混合构造。
-在训练时，当前学生策略模型 $\pi_{\theta}$ 接收 Prompt $x \in \mathcal{D}_{\text{prompts}}$ ，并在线自回归采样生成推荐或对话路径轨迹 $y \sim \pi_{\theta}$ 。学生生成的这串轨迹 $y$ 被输入教师模型 $\pi_{\phi}$ （Qwen-3-8B-Instruct），以教师模型在这些路径上输出的软概率分布作为优化目标（而不是静态的离散 Token）。
+在训练时，当前学生策略模型 $\pi\_{\theta}$ 接收 Prompt $x \in \mathcal{D}\_{\text{prompts}}$ ，并在线自回归采样生成推荐或对话路径轨迹 $y \sim \pi\_{\theta}$ 。学生生成的这串轨迹 $y$ 被输入教师模型 $\pi\_{\phi}$ （Qwen-3-8B-Instruct），以教师模型在这些路径上输出的软概率分布作为优化目标（而不是静态的离散 Token）。
 *   **OPD 损失函数 (基于 Reverse KL 散度)**：
 学生模型通过最小化其自身生成的轨迹在教师模型上的 Reverse KL 散度进行优化：
 
@@ -357,7 +357,7 @@ $$
 \mathcal{L}_{\text{OPD}}(\theta) = \mathbb{E}_{x \sim \mathcal{D}, y \sim \pi_{\theta}} \left[ \text{D}_{\text{KL}} \left( \pi_{\theta}(y \mid x) \parallel \pi_{\phi}(y \mid x) \right) \right]
 $$
 
-其中， $\pi_{\phi}$ 是教师模型 $\text{Qwen-3-8B-Instruct}$ 在通用语言/推荐任务下的策略输出概率。
+其中， $\pi\_{\phi}$ 是教师模型 $\text{Qwen-3-8B-Instruct}$ 在通用语言/推荐任务下的策略输出概率。
 在多任务联合对齐中，该损失与推荐任务损失合并进行优化：
 
 $$
@@ -420,10 +420,10 @@ $$
 
 *   **第二步：混合专家网络统一融合与多域在策蒸馏 (MOPD - Multi-domain On-Policy Distillation) 样本构造与训练方法**：
 为了在多业务场景联合强化学习对齐（MoE 权重分配）的长链 RL 优化中，防止垂直领域的“基底推荐能力”发生漂移和崩塌，OneReason 提出 MOPD 机制。
-    1. **领域教师库（Domain Teachers）**：收集并保存短视频、直播、广告、电商四个垂直场景在上游 CPT / SFT 训练中最优的 Checkpoint 模型作为领域教师 $\pi_{\text{teacher}}^d$ 。
-    2. **输入样本池（Multi-domain Prompt Set）**：构建包含各垂直业务场景推荐日志行为的多域 Prompt 集合 $\mathcal{D}_d$ 。
-    3. **在策采样与蒸馏（On-Policy Distillation）**：训练时，学生策略模型 $\pi_{\theta}$ 接收来自各域的行为 Prompt $x^d \in \mathcal{D}_d$ ，进行在线的 **On-policy 路径采样**，获得当前的推荐商品 SID 序列 rollouts $y^d \sim \pi_{\theta}$ 。
-    4. 将这串由学生自己生成的推荐路径输入其对应的垂直领域教师模型 $\pi_{\text{teacher}}^d$ 。教师模型不需要在全词表上计算完整的条件分布，只需计算该路径下的词元 log 概率（Token-level log-probabilities），用作稠密的纠错指导信号（Dense distillation signal），通过最小化 Reverse KL 散度约束学生模型：
+    1. **领域教师库（Domain Teachers）**：收集并保存短视频、直播、广告、电商四个垂直场景在上游 CPT / SFT 训练中最优的 Checkpoint 模型作为领域教师 $\pi\_{\text{teacher}}^d$ 。
+    2. **输入样本池（Multi-domain Prompt Set）**：构建包含各垂直业务场景推荐日志行为的多域 Prompt 集合 $\mathcal{D}\_d$ 。
+    3. **在策采样与蒸馏（On-Policy Distillation）**：训练时，学生策略模型 $\pi\_{\theta}$ 接收来自各域的行为 Prompt $x^d \in \mathcal{D}\_d$ ，进行在线的 **On-policy 路径采样**，获得当前的推荐商品 SID 序列 rollouts $y^d \sim \pi\_{\theta}$ 。
+    4. 将这串由学生自己生成的推荐路径输入其对应的垂直领域教师模型 $\pi\_{\text{teacher}}^d$ 。教师模型不需要在全词表上计算完整的条件分布，只需计算该路径下的词元 log 概率（Token-level log-probabilities），用作稠密的纠错指导信号（Dense distillation signal），通过最小化 Reverse KL 散度约束学生模型：
 
 $$
 \mathcal{L}_{\text{MOPD}}(\theta) = \sum_{d \in \text{Domains}} \mathbb{E}_{x^d \sim \mathcal{D}_d, y^d \sim \pi_{\theta}} \left[ \text{D}_{\text{KL}} \left( \pi_{\theta}(y^d \mid x^d) \parallel \pi_{\text{teacher}}^d(y^d \mid x^d) \right) \right]
@@ -460,10 +460,10 @@ $$
 
 | 维度 | SFT (监督微调) 样本 | RL (强化学习偏好对齐) 样本 |
 | :--- | :--- | :--- |
-| **样本构成** | 单个 Prompt 与单条正反馈（Clicked/Bought）Target 对： $(x_u, y_{\text{true}})$ 。 | 偏好对 $(x_u, y_w, y_l)$ （DPO）或多路采样轨迹组 $\{y_1, y_2, \dots, y_G\}$ （GRPO）。 |
-| **Prompt 部分 ($x_u$)** | 用户画像 + 行为历史序列 + 任务指令。 | 与 SFT 阶段的 Prompt 结构基本一致（复用 SFT 数据集的输入端）。 |
+| **样本构成** | 单个 Prompt 与单条正反馈（Clicked/Bought）Target 对： $(x\_u, y\_{\text{true}})$ 。 | 偏好对 $(x\_u, y\_w, y\_l)$ （DPO）或多路采样轨迹组 $\{y\_1, y\_2, \dots, y\_G\}$ （GRPO）。 |
+| **Prompt 部分 ($x\_u$)** | 用户画像 + 行为历史序列 + 任务指令。 | 与 SFT 阶段的 Prompt 结构基本一致（复用 SFT 数据集的输入端）。 |
 | **Target 部分 ($y$)** | **静态的 Ground-Truth**：历史日志中用户真实点击或购买的商品离散 SID。 | **动态的模型自生成轨迹**：在线或离线通过当前 Policy 模型预测输出的候选推荐序列。 |
-| **构造方法与标签来源** | 直接读取离线用户交互日志（数据驱动）。 | **在线在策生成 (On-Policy Rollout)**：<br>1. 输入 $x_u$ 后，利用 Policy 通过 Beam Search 或随机采样（如 top-p）自主生成多条候选路径。<br>2. 用 Reward Model（三塔或多维奖励模型）对自生成序列进行打分。<br>3. 在 DPO 中选出得分最高（Chosen $y_w$ ）与最低（Rejected $y_l$ ）的对；在 GRPO 中直接以这组候选的奖励相对优势值作为梯度更新权重。 |
+| **构造方法与标签来源** | 直接读取离线用户交互日志（数据驱动）。 | **在线在策生成 (On-Policy Rollout)**：<br>1. 输入 $x\_u$ 后，利用 Policy 通过 Beam Search 或随机采样（如 top-p）自主生成多条候选路径。<br>2. 用 Reward Model（三塔或多维奖励模型）对自生成序列进行打分。<br>3. 在 DPO 中选出得分最高（Chosen $y\_w$ ）与最低（Rejected $y\_l$ ）的对；在 GRPO 中直接以这组候选的奖励相对优势值作为梯度更新权重。 |
 
 > [!IMPORTANT]
 > **RL 阶段的本质区别在于它引入了负反馈（Rejected 样本）或相对比较。** SFT 数据只告诉模型“用户喜欢什么”，而 RL 样本告诉模型“在模型自己生成的多种推荐结果中，哪一个比另一个更好”，从而消除了曝光偏差，并提供纠错梯度。
@@ -472,9 +472,9 @@ $$
 
 | 维度 | SFT 样本 | OPD / MOPD 样本 |
 | :--- | :--- | :--- |
-| **样本构成** | 具体的、静态的离散 Token 序列对： $(x_u, y_{\text{true}})$ 。 | 只利用 Prompt 集合 $\mathcal{D}_{\text{prompts}}$ ，没有静态的目标 Target 文本。 |
-| **Prompt 部分 ($x_u$)** | 纯推荐行为序列。 | **多任务混合 Prompt 集合**：包含推荐行为 Prompt，以及为了防止忘却而混合的**通用自然语言/推理（MMLU, Commonsense QA）Prompt**。 |
-| **Target 标签来源** | 历史真实交互的商品 SID。 | **教师模型（Teacher）的软概率分布**：<br>1. 学生模型 $\pi_{\theta}$ 在策自生成推荐轨迹 $y \sim \pi_{\theta}$ 。<br>2. 将该轨迹在教师模型 $\pi_{\phi}$ 上的词表预测概率分布（Soft Probability Distribution）作为目标标签。<br>3. 通过最小化 Reverse KL 散度，强迫学生模型在自己走过的路径上向教师的概率对齐。 |
+| **样本构成** | 具体的、静态的离散 Token 序列对： $(x\_u, y\_{\text{true}})$ 。 | 只利用 Prompt 集合 $\mathcal{D}\_{\text{prompts}}$ ，没有静态的目标 Target 文本。 |
+| **Prompt 部分 ($x\_u$)** | 纯推荐行为序列。 | **多任务混合 Prompt 集合**：包含推荐行为 Prompt，以及为了防止忘却而混合的**通用自然语言/推理（MMLU, Commonsense QA）Prompt**。 |
+| **Target 标签来源** | 历史真实交互的商品 SID。 | **教师模型（Teacher）的软概率分布**：<br>1. 学生模型 $\pi\_{\theta}$ 在策自生成推荐轨迹 $y \sim \pi\_{\theta}$ 。<br>2. 将该轨迹在教师模型 $\pi\_{\phi}$ 上的词表预测概率分布（Soft Probability Distribution）作为目标标签。<br>3. 通过最小化 Reverse KL 散度，强迫学生模型在自己走过的路径上向教师的概率对齐。 |
 
 > [!NOTE]
 > **OPD 的本质是在策知识巩固，不需要显式的 Ground-truth 样本标签。** 它通过使用混合 Prompt 库作为输入，在训练中实时计算“学生输出”与“教师输出”的距离，确保模型在学习推荐对齐时，通用语义和推理链不会发生崩塌。
