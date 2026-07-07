@@ -82,7 +82,7 @@ OneSearch 将 SFT 拆分为由易到难的三个课程化（Curriculum）阶段�
 #### 2. RL/对齐样本构造与损失函数 (PARS)
 *   **样本构造**：引入 **Preference-Aware Reward System (PARS)**，构造 Query 维度下的商品列表偏好样本。
 *   **六级行为层级与自适应权重**：
-    将用户的交互反馈划分为 6 个等级（例如：购买、收藏、加购、点击、曝光未点击、未曝光），赋予递减的基础权重 $\lambda$ ：
+将用户的交互反馈划分为 6 个等级（例如：购买、收藏、加购、点击、曝光未点击、未曝光），赋予递减的基础权重 $\lambda$ ：
 
 $$
 \lambda = [\lambda_{\text{buy}}, \lambda_{\text{add-to-cart}}, \lambda_{\text{collect}}, \lambda_{\text{click}}, \lambda_{\text{expose-unclick}}, \lambda_{\text{unexpose}}]
@@ -90,7 +90,7 @@ $$
 
 具体配置为： $\lambda = [2.0, 1.5, 1.0, 0.5, 0.2, 0.0]$ 。
 *   **校准奖励模型 (Reward Model)**：
-    为了避免马太效应，融合了近 7 日的 CTR、CVR 和 CTCVR 指标，训练三塔结构预测模型输出偏好分数 $r(q, i)$ ：
+为了避免马太效应，融合了近 7 日的 CTR、CVR 和 CTCVR 指标，训练三塔结构预测模型输出偏好分数 $r(q, i)$ ：
 
 $$
 r(q, i) = w_{\text{ctr}} \cdot P(\text{click} \mid q, i) + w_{\text{cvr}} \cdot P(\text{buy} \mid \text{click}, q, i)
@@ -103,7 +103,7 @@ $$
 \mathcal{L}_{\text{PARS}} = -\sum_{q} \log \frac{\sum_{i \in \mathcal{I}^+} \exp(r(q, i) / \tau)}{\sum_{j \in \mathcal{I}^+ \cup \mathcal{I}^-} \exp(r(q, j) / \tau)}
 $$
 
-    $\mathcal{I}^+$ 代表正反馈商品集合， $\mathcal{I}^-$ 代表曝光未点击等负反馈商品集合， $\tau$ 为温度超参数。
+$\mathcal{I}^+$ 代表正反馈商品集合， $\mathcal{I}^-$ 代表曝光未点击等负反馈商品集合， $\tau$ 为温度超参数。
 
 ---
 
@@ -124,7 +124,7 @@ OneSearch-V2 专注于解决长尾 Query 理解困难和强化学习“奖励作
     Target Item SID: <sid_level_1_x><sid_level_2_y><sid_level_3_z>
     ```
 *   **潜空间推理自回归蒸馏 (Latent Reasoning Self-Distillation) 损失函数**：
-    为了使学生模型在在线服务时不输出中间的 `<thought>` 词元也能具备推理能力，OneSearch-V2 将带有推理链的教师概率分布蒸馏给不带推理链的当前策略：
+为了使学生模型在在线服务时不输出中间的 `<thought>` 词元也能具备推理能力，OneSearch-V2 将带有推理链的教师概率分布蒸馏给不带推理链的当前策略：
 
 $$
 \mathcal{L}_{\text{distill}} = \text{D}_{\text{KL}} \left( P_{\text{teacher}}(y \mid x, \text{thought}) \parallel \pi_{\theta}(y \mid x) \right)
@@ -134,7 +134,7 @@ $$
 
 #### 2. RL 阶段：TPMA-GRPO 信用分配与自适应剪切
 *   **在策采样轨迹 (On-Policy Rollout) 与样本构造方法**：
-    在 RL 阶段，输入端直接复用 SFT 阶段的 Prompt $x_u$ （即用户画像及搜索 Query）。模型不再匹配静态的点击日志商品，而是使用当前策略模型 $\pi_{\theta}$ 在线对每个 Prompt **在策生成（Rollout）一组共 $G$ 条候选轨迹** $\{y_1, y_2, \dots, y_G\}$ 。每条轨迹包含自生成的 `<thought>` 推理链以及目标商品 SID 序列。这些自生成的轨迹将通过行为反馈函数进行打分来指导策略更新，从而从模型自身的输出中提供纠错信号。
+在 RL 阶段，输入端直接复用 SFT 阶段的 Prompt $x_u$ （即用户画像及搜索 Query）。模型不再匹配静态的点击日志商品，而是使用当前策略模型 $\pi_{\theta}$ 在线对每个 Prompt **在策生成（Rollout）一组共 $G$ 条候选轨迹** $\{y_1, y_2, \dots, y_G\}$ 。每条轨迹包含自生成的 `<thought>` 推理链以及目标商品 SID 序列。这些自生成的轨迹将通过行为反馈函数进行打分来指导策略更新，从而从模型自身的输出中提供纠错信号。
 *   **TPMA-GRPO（令牌-位置边际优势）优化目标函数**：
 
 $$
@@ -171,14 +171,14 @@ OneRec 将端到端生成式架构引入推荐场景，使用 Encoder-Decoder �
 #### 1. 持续预训练（CPT）与 SFT 样本构造
 *   **任务构造**：
     *   **I2I 协同损失**：用 Swing 算法计算商品相似度，构造正样本对，在预训练中拉近相似商品的表征。
-        Swing 算法相似度计算公式为：
+Swing 算法相似度计算公式为：
 
 $$
 w_{i,j} = \sum_{u \in U_i \cap U_j} \sum_{v \in U_i \cap U_j} \frac{1}{\alpha + |I_u \cap I_v|}
 $$
 
 其中 $U_i$ 和 $U_j$ 分别是交互过商品 $i$ 和 $j$ 的用户集合， $I_u$ 和 $I_v$ 分别是用户 $u$ 和 $v$ 交互过的商品集合， $\alpha$ 是平滑常数。
-        样本对输入输出格式为：
+样本对输入输出格式为：
         ```text
         Input: "Anchor Item: <sid_level_1_a><sid_level_2_b><sid_level_3_c> | Match similar item:"
         Output: "<sid_level_1_x><sid_level_2_y><sid_level_3_z>"
@@ -194,7 +194,7 @@ $$
         Prompt: User history sequence: [SID_1, SID_2, ..., SID_n] | Context: [Time_of_Day, Device]
         Response: [SID_n+1, SID_n+2, ..., SID_n+k]
         ```
-        Loss 仅在 Target 部分计算，对 Prompt 部分的 Token 进行 Mask：
+Loss 仅在 Target 部分计算，对 Prompt 部分的 Token 进行 Mask：
 
 $$
 \mathcal{L}_{\text{NTP}} = -\sum_{t=n+1}^{n+k} \log P(SID_t \mid SID_{\lt t}, \text{Prompt})
@@ -202,7 +202,7 @@ $$
 
 #### 2. RL/DPO 阶段：迭代偏好优化 (IPA)
 *   **在策候选采样与偏好样本对 $(q_w, q_l)$ 构造方法**：
-    由于推荐系统在线只能观测到单次曝光结果，无法直接构造 DPO 所需的 $(q_w, q_l)$ 对。OneRec 采用自生成的“Self-Hard Negatives”采样构造法：
+由于推荐系统在线只能观测到单次曝光结果，无法直接构造 DPO 所需的 $(q_w, q_l)$ 对。OneRec 采用自生成的“Self-Hard Negatives”采样构造法：
     1. 输入历史 Prompt $x_u$ ，使用当前策略模型 $\pi_{\theta}$ 通过 **Beam Search** 算法采样生成 $M$ 个候选推荐列表序列 $\{q_1, q_2, ..., q_M\}$ 。
     2. 使用预先训练的多目标用户行为 Reward Model $R(x_u, q_j)$ 对这些自生成的序列进行打分评估。
     3. 提取得分最高和最低的序列对，分别作为胜出样本（Chosen $q_w$ ）和落败样本（Rejected $q_l$ ）：
@@ -232,13 +232,13 @@ $$
 
 #### 2. RL 阶段的自适应剪切与时长奖励塑形 (GBPO)
 *   **时间感知奖励塑形 (Duration-Aware Reward Shaping)**：
-    为了消除长视频自然播放时间长、短视频容易被跳过的偏置，将物料按时长进行对数分桶：
+为了消除长视频自然播放时间长、短视频容易被跳过的偏置，将物料按时长进行对数分桶：
 
 $$
 F(d) = \lfloor \log_{\beta}(d + \epsilon) \rfloor
 $$
 
-    在每个分桶内，对用户的观看时长（Play Time, $pt$ ）进行标准化作为奖励分 $R_{\text{duration}}(pt, d)$ ：
+在每个分桶内，对用户的观看时长（Play Time, $pt$ ）进行标准化作为奖励分 $R_{\text{duration}}(pt, d)$ ：
 
 $$
 R_{\text{duration}}(pt, d) = \frac{pt - \mu_{F(d)}}{\sigma_{F(d)}}
@@ -285,9 +285,9 @@ $$
 R_{\text{multi}}(Y) = \frac{1}{|Y|} \sum_{y \in Y} \max_{j \in \mathcal{I}^+} \text{Similarity}(y, j)
 $$
 
-    $\text{Similarity}(y, j)$ 为预测推荐 ID $y$ 与用户真实正反馈 ID $j$ 在 Latent 语义空间中的余弦相似度。
+$\text{Similarity}(y, j)$ 为预测推荐 ID $y$ 与用户真实正反馈 ID $j$ 在 Latent 语义空间中的余弦相似度。
 *   **部署优化：Think-Ahead 架构**：
-    为了避免在线推荐中生成数百个 CoT Token 带来严重的 P99 延迟，Think-Ahead 采用了解耦策略，将 pre-computed 的 `Thought` 作为 Prompt 输入，只让模型自回归生成最终的商品 SID（仅耗费几个 token 的生成时间）。
+为了避免在线推荐中生成数百个 CoT Token 带来严重的 P99 延迟，Think-Ahead 采用了解耦策略，将 pre-computed 的 `Thought` 作为 Prompt 输入，只让模型自回归生成最终的商品 SID（仅耗费几个 token 的生成时间）。
 
 ---
 
@@ -347,18 +347,18 @@ OpenOneRec 是快手开源的搜推大模型，其核心在于如何统一多任
 
 #### 3. Post-Training RL 对齐与在策蒸馏阶段 (On-Policy Distillation, OPD)
 *   **在策轨迹采样 (On-Policy Sampling) 与输入样本构造方法**：
-    在 OPD 阶段，训练样本**仅包含 Prompt 集合 $\mathcal{D}_{\text{prompts}}$ ，没有静态的目标 Target 文本**。
-    该 Prompt 集合通过对推荐历史序列（70% 推荐行为 Log）与通用语言能力语料（20% 密集多模态描述，10% 自然语言推理任务 Prompt）进行混合构造。
-    在训练时，当前学生策略模型 $\pi_{\theta}$ 接收 Prompt $x \in \mathcal{D}_{\text{prompts}}$ ，并在线自回归采样生成推荐或对话路径轨迹 $y \sim \pi_{\theta}$ 。学生生成的这串轨迹 $y$ 被输入教师模型 $\pi_{\phi}$ （Qwen-3-8B-Instruct），以教师模型在这些路径上输出的软概率分布作为优化目标（而不是静态的离散 Token）。
+在 OPD 阶段，训练样本**仅包含 Prompt 集合 $\mathcal{D}_{\text{prompts}}$ ，没有静态的目标 Target 文本**。
+该 Prompt 集合通过对推荐历史序列（70% 推荐行为 Log）与通用语言能力语料（20% 密集多模态描述，10% 自然语言推理任务 Prompt）进行混合构造。
+在训练时，当前学生策略模型 $\pi_{\theta}$ 接收 Prompt $x \in \mathcal{D}_{\text{prompts}}$ ，并在线自回归采样生成推荐或对话路径轨迹 $y \sim \pi_{\theta}$ 。学生生成的这串轨迹 $y$ 被输入教师模型 $\pi_{\phi}$ （Qwen-3-8B-Instruct），以教师模型在这些路径上输出的软概率分布作为优化目标（而不是静态的离散 Token）。
 *   **OPD 损失函数 (基于 Reverse KL 散度)**：
-    学生模型通过最小化其自身生成的轨迹在教师模型上的 Reverse KL 散度进行优化：
+学生模型通过最小化其自身生成的轨迹在教师模型上的 Reverse KL 散度进行优化：
 
 $$
 \mathcal{L}_{\text{OPD}}(\theta) = \mathbb{E}_{x \sim \mathcal{D}, y \sim \pi_{\theta}} \left[ \text{D}_{\text{KL}} \left( \pi_{\theta}(y \mid x) \parallel \pi_{\phi}(y \mid x) \right) \right]
 $$
 
 其中， $\pi_{\phi}$ 是教师模型 $\text{Qwen-3-8B-Instruct}$ 在通用语言/推荐任务下的策略输出概率。
-    在多任务联合对齐中，该损失与推荐任务损失合并进行优化：
+在多任务联合对齐中，该损失与推荐任务损失合并进行优化：
 
 $$
 \mathcal{L}_{\text{蒸馏}}(\theta) = \mathcal{L}_{\text{RL-Task}}(\theta) + \gamma \cdot \mathcal{L}_{\text{OPD}}(\theta)
@@ -412,14 +412,14 @@ OneReason 抛弃了无逻辑的 Item 拼接，提出了结构极其严格的 **�
 
 #### 3. RL 阶段：Specialize-then-Unify 训练策略
 *   **第一步：垂类专精对齐 (Specialize Phase)**
-    在电商、短视频、直播、本地生活广告 4 个场景下，利用特定奖励模型分别训练专精策略：
+在电商、短视频、直播、本地生活广告 4 个场景下，利用特定奖励模型分别训练专精策略：
 
 $$
 \theta_{\text{domain}} = \arg\max_{\theta} \mathbb{E} [ R_{\text{domain}}(x_u, y) ] - \beta \text{D}_{\text{KL}}(\pi_{\theta} \parallel \pi_{\text{sft}})
 $$
 
 *   **第二步：混合专家网络统一融合与多域在策蒸馏 (MOPD - Multi-domain On-Policy Distillation) 样本构造与训练方法**：
-    为了在多业务场景联合强化学习对齐（MoE 权重分配）的长链 RL 优化中，防止垂直领域的“基底推荐能力”发生漂移和崩塌，OneReason 提出 MOPD 机制。
+为了在多业务场景联合强化学习对齐（MoE 权重分配）的长链 RL 优化中，防止垂直领域的“基底推荐能力”发生漂移和崩塌，OneReason 提出 MOPD 机制。
     1. **领域教师库（Domain Teachers）**：收集并保存短视频、直播、广告、电商四个垂直场景在上游 CPT / SFT 训练中最优的 Checkpoint 模型作为领域教师 $\pi_{\text{teacher}}^d$ 。
     2. **输入样本池（Multi-domain Prompt Set）**：构建包含各垂直业务场景推荐日志行为的多域 Prompt 集合 $\mathcal{D}_d$ 。
     3. **在策采样与蒸馏（On-Policy Distillation）**：训练时，学生策略模型 $\pi_{\theta}$ 接收来自各域的行为 Prompt $x^d \in \mathcal{D}_d$ ，进行在线的 **On-policy 路径采样**，获得当前的推荐商品 SID 序列 rollouts $y^d \sim \pi_{\theta}$ 。
