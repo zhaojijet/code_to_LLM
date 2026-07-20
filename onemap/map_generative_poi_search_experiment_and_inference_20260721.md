@@ -29,9 +29,9 @@
 
 目标建模为：
 
-$$
-P_\theta(\operatorname{SID}(p)\mid q,o,a,v,m,t,h)
-$$
+```math
+P_\theta(\mathrm{SID}(p)\mid q,o,a,v,m,t,h)
+```
 
 其中 `a` 和 `o` 必须明确区分。例如用户位于深圳搜索“北京协和医院”，目标区域来自 query，而不是当前位置。
 
@@ -277,15 +277,25 @@ Post-trained 大模型主要作为离线教师。
 
 ## 6.1 多路表征
 
-$$
-\begin{aligned}
-e_{text}&=\mathrm{Qwen3Embedding}(name,alias,category,address,AOI,map\_caption)\\
-e_{struct}&=\mathrm{Embedding}(category,brand,admin,poi\_type,status)\\
-e_{geo}&=\mathrm{GeoEncoder}(lat,lon,multi\_scale\_grid,road,access)\\
-e_{graph}&=\mathrm{GraphEncoder}(POI,AOI,road,parent,entrance)\\
-e_{collab}&=\mathrm{BehaviorEncoder}(query\leftrightarrow POI\ interactions)
-\end{aligned}
-$$
+```math
+e_{\mathrm{text}}=\mathrm{Qwen3Embedding}(\mathrm{name},\mathrm{alias},\mathrm{category},\mathrm{address},\mathrm{AOI},\mathrm{mapCaption})
+```
+
+```math
+e_{\mathrm{struct}}=\mathrm{Embedding}(\mathrm{category},\mathrm{brand},\mathrm{admin},\mathrm{poiType},\mathrm{status})
+```
+
+```math
+e_{\mathrm{geo}}=\mathrm{GeoEncoder}(\mathrm{lat},\mathrm{lon},\mathrm{multiScaleGrid},\mathrm{road},\mathrm{access})
+```
+
+```math
+e_{\mathrm{graph}}=\mathrm{GraphEncoder}(\mathrm{POI},\mathrm{AOI},\mathrm{road},\mathrm{parent},\mathrm{entrance})
+```
+
+```math
+e_{\mathrm{collab}}=\mathrm{BehaviorEncoder}(\mathrm{query}\leftrightarrow\mathrm{POIInteractions})
+```
 
 ## 6.2 Text Encoder
 
@@ -368,10 +378,10 @@ e_collab：真实搜索行为
 
 固定向量输入时先用 gated fusion：
 
-$$
-z_{poi}=\mathrm{LN}\left(\sum_k g_kW_ke_k\right),\quad
-g=\operatorname{softmax}(W_g[e_1;...;e_K])
-$$
+```math
+z_{\mathrm{poi}}=\mathrm{LN}(\sum_k g_kW_ke_k),\quad
+g=\mathrm{softmax}(W_g[e_1,\ldots,e_K])
+```
 
 ### Q-Former 适用条件
 
@@ -409,16 +419,9 @@ $$
 
 ## 6.9 POI encoder loss
 
-$$
-\begin{aligned}
-L_{enc}=&\lambda_tL_{q2p\_InfoNCE}
-+\lambda_bL_{behavior\_BPR/InfoNCE}\\
-&+\lambda_fL_{field\_mask}
-+\lambda_gL_{geo\_relation}
-+\lambda_rL_{graph\_link}
-+\lambda_cL_{modality\_consistency}
-\end{aligned}
-$$
+```math
+L_{\mathrm{enc}}=\lambda_tL_{\mathrm{q2p}}^{\mathrm{InfoNCE}}+\lambda_bL_{\mathrm{behavior}}^{\mathrm{BPR/InfoNCE}}+\lambda_fL_{\mathrm{field}}^{\mathrm{mask}}+\lambda_gL_{\mathrm{geo}}^{\mathrm{relation}}+\lambda_rL_{\mathrm{graph}}^{\mathrm{link}}+\lambda_cL_{\mathrm{modality}}^{\mathrm{consistency}}
+```
 
 `modality_consistency` 通过随机丢弃某一路输入，使冷启动、字段缺失和无行为 POI 仍可编码。
 
@@ -811,12 +814,9 @@ Output:
 
 主模型优先统一使用 weighted NTP：
 
-$$
-\begin{aligned}
-L_{CPT}={}&-\sum_t w_{type(x_t)}\log P_\theta(x_t\mid x_{<t}) \\
-&+\lambda_{retain}L_{retain}
-\end{aligned}
-$$
+```math
+L_{\mathrm{CPT}}=-\sum_t w_{\mathrm{type}(x_t)}\log P_\theta(x_t\mid x_{1:t-1})+\lambda_{\mathrm{retain}}L_{\mathrm{retain}}
+```
 
 建议：
 
@@ -1004,9 +1004,9 @@ Constraints:
 
 使用：
 
-$$
-L_{MML}=-\log\sum_{p\in P^+(x)}w_pP_\theta(SID_p\mid x)
-$$
+```math
+L_{\mathrm{MML}}=-\log\sum_{p\in P^+(x)}w_pP_\theta(\mathrm{SID}_p\mid x)
+```
 
 ### SFT-11：结果列表辅助任务
 
@@ -1164,9 +1164,9 @@ Shared target:
 
 Loss：
 
-$$
-L_{KD}=\sum_l KL(P_T(s_l\mid x,privileged)\Vert P_S(s_l\mid x))
-$$
+```math
+L_{\mathrm{KD}}=\sum_l D_{\mathrm{KL}}(P_T(s_l\mid x,\mathrm{privileged})\Vert P_S(s_l\mid x))
+```
 
 教师 logits 必须 detach；线上学生不需要关键词、地图长文本或第二个模型调用。
 
@@ -1185,12 +1185,9 @@ Output:
 
 ## 9.4 SFT loss
 
-$$
-\begin{aligned}
-L_{SFT}={}&L_{CE}+\lambda_mL_{MML}+\lambda_dL_{KD} \\
-&+\lambda_rL_{RDrop}+\lambda_uL_{UL}
-\end{aligned}
-$$
+```math
+L_{\mathrm{SFT}}=L_{\mathrm{CE}}+\lambda_mL_{\mathrm{MML}}+\lambda_dL_{\mathrm{KD}}+\lambda_rL_{\mathrm{RDrop}}+\lambda_uL_{\mathrm{UL}}
+```
 
 说明：
 
@@ -1203,9 +1200,9 @@ $$
 
 位置加权版本：
 
-$$
-L_{SID}=-\sum_{l=1}^{L}\alpha_l\log P(s_l\mid x,s_{<l})
-$$
+```math
+L_{\mathrm{SID}}=-\sum_{l=1}^{L}\alpha_l\log P(s_l\mid x,s_{1:l-1})
+```
 
 先用等权 `[1,1,1]`，再对 `[1.5,1.2,1]` 或基于位置条件熵的权重做消融。不能未经验证便认定第一层一定最重要。
 
@@ -1233,20 +1230,19 @@ SFT replay：10%～20%
 
 ## 10.2 DPO loss
 
-$$
-\begin{aligned}
-L_{DPO}=-\log\sigma\Bigg(\beta\Bigg[{}
-&\log\frac{\pi_\theta(y^+\mid x)}{\pi_{ref}(y^+\mid x)} \\
-&-\log\frac{\pi_\theta(y^-\mid x)}{\pi_{ref}(y^-\mid x)}
-\Bigg]\Bigg)
-\end{aligned}
-$$
+```math
+A_\theta(x,y)=\log\frac{\pi_\theta(y\mid x)}{\pi_{\mathrm{ref}}(y\mid x)}
+```
+
+```math
+L_{\mathrm{DPO}}=-\log\sigma(\beta[A_\theta(x,y^+)-A_\theta(x,y^-)])
+```
 
 地图推荐使用：
 
-$$
-L=L_{DPO}+\alpha L_{NLL}(y^+)
-$$
+```math
+L=L_{\mathrm{DPO}}+\alpha L_{\mathrm{NLL}}(y^+)
+```
 
 `NLL` anchor 防止偏好学习破坏 SID 生成和召回覆盖。
 
@@ -1428,9 +1424,9 @@ Candidate B route_time=12min, percentile=0.70
 
 地理 reward：
 
-$$
-R_{geo}=1-F_{bucket}(\log(1+t_{route}))
-$$
+```math
+R_{\mathrm{geo}}=1-F_{\mathrm{bucket}}(\log(1+t_{\mathrm{route}}))
+```
 
 这比直接使用米数更能处理市中心和郊区分布差异。
 
@@ -1509,9 +1505,11 @@ Order C canceled_reason=driver_supply_shortage
 
 训练权重可使用截断 IPS：
 
-$$
-w=\min(w_{max},1/propensity)
-$$
+```math
+w=\min(w_{\mathrm{max}},1/\rho_{\mathrm{exp}})
+```
+
+其中 $\rho_{\mathrm{exp}}$ 表示候选在日志中的曝光 propensity。
 
 并与普通日志、随机曝光流量分别做稳定性对照。
 
@@ -1525,14 +1523,9 @@ $$
 通过合法性和相关性门槛               → 才计算geo/access/behavior/list
 ```
 
-$$
-\begin{aligned}
-R={}&G_{valid}G_{rel}\Big[
-w_rR_{rel}+w_eR_{entity}+w_g(q)R_{geo} \\
-&+w_aR_{access}+w_bR_{behavior}+w_fR_{fresh}+w_l(q)R_{list}
-\Big]-P
-\end{aligned}
-$$
+```math
+R=G_{\mathrm{valid}}G_{\mathrm{rel}}(w_rR_{\mathrm{rel}}+w_eR_{\mathrm{entity}}+w_g(q)R_{\mathrm{geo}}+w_aR_{\mathrm{access}}+w_bR_{\mathrm{behavior}}+w_fR_{\mathrm{fresh}}+w_l(q)R_{\mathrm{list}})-P
+```
 
 ### 相关性等级
 
@@ -1564,13 +1557,13 @@ $$
 
 对于多正确 POI：
 
-$$
+```math
 r_l(s)=\max_{p\in P^+(x)}\sum_{j=1}^{l}\alpha_j\mathbf{1}[s_j=p_j]
-$$
+```
 
-$$
+```math
 \Delta r_l=r_l-r_{l-1}
-$$
+```
 
 Map-GAOQ 的 prefix reward 还应融合：
 
