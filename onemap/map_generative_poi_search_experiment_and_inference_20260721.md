@@ -99,13 +99,13 @@ SID合法/POI有效
 
 | 工作 | SID/架构 | 训练方法 | 地图搜索迁移 |
 |---|---|---|---|
-| [OneRec](https://arxiv.org/html/2502.18965) | Balanced K-Means SID；Encoder-Decoder；Decoder MoE | 高质量 session 做 SID NTP；Reward Model 对 beam 候选排序；最好/最差组成 self-hard DPO；迭代 IPA | 训练结果页/候选集合；用模型自己生成的同名异城、错分店、主体/入口作为困难负例 |
+| [OneRec](https://arxiv.org/html/2502.18965) | RQ-Kmeans（含 balanced K-means）三层 SID；Encoder-Decoder；Decoder MoE | 高质量 session 做 SID NTP；Reward Model 对 beam 候选排序；最好/最差组成 self-hard DPO；迭代 IPA | 训练结果页/候选集合；用模型自己生成的同名异城、错分店、主体/入口作为困难负例 |
 | [OneRec-V2](https://arxiv.org/html/2508.20900) | Lazy Decoder-Only；context 静态 KV；目标 SID 短解码 | 只对最新目标计算 loss；真实用户反馈 RL；Duration-Aware Reward；GBPO；强调 on-policy 分布 | 对路线时间按意图、城市密度、类别分桶；优先使用本模型真实展现反馈，避免只依赖旧 ranker RM |
 | [OneRec-Think](https://arxiv.org/html/2510.11639) | Itemic token 与自然语言空间对齐 | Persona grounding、顺序预测、SID→caption、通用 LM；token warm-up；从裁剪历史生成 rationale，再用原始噪声历史学习；Rollout-Beam+GRPO | 教师利用地图事实生成意图/推理，学生线上直接生成 SID；热 query 可缓存意图或前缀，不在线生成长 CoT |
-| [OpenOneRec](https://arxiv.org/html/2512.24762) / [官方仓库](https://github.com/Kuaishou-OneRec/OpenOneRec) | Qwen3+Itemic token | Itemic-Text Alignment→全参 Co-Pretrain→多任务 SFT→通用域 on-policy reverse-KL 蒸馏→Rec-GRPO | 地图 CPT 混入通用中文、地址与地图问答；SFT 后检查基础能力退化；必要时用原始 Qwen 教师恢复 |
+| [OpenOneRec](https://arxiv.org/html/2512.24762) / [官方仓库](https://github.com/Kuaishou-OneRec/OpenOneRec) | Qwen3+Itemic token | Itemic-Text Alignment→全参 Co-Pretrain→多任务 SFT→通用域 on-policy reverse-KL 蒸馏→Rec-RL（基于 GRPO） | 地图 CPT 混入通用中文、地址与地图问答；SFT 后检查基础能力退化；必要时用原始 Qwen 教师恢复 |
 | [OneLoc](https://arxiv.org/html/2508.14646) | Geo-aware SID、自注意力、邻域 prompt | SID NTP；地理 reward+GMV reward；beam 最优/最差做 DPO | Geo 必须进入 SID、context 和 reward；但距离 reward 要按搜索意图控制，不能照搬“越近越好” |
 | [OneSearch](https://arxiv.org/html/2509.03236) | KHQE；query/item 语义协同对齐；RQ-KMeans+OPQ | Encoder 侧 q2q/i2i/q2i contrastive、margin、困难相关性校正；文本↔SID、共现、个性化三阶段 SFT；RM+listwise DPO+真实行为 | 最接近地图搜索：强 query–POI 相关性、三阶段 SFT、多级行为、DPO+NLL、流式真实反馈 |
-| [OneSearch-V2](https://arxiv.org/html/2603.24422) | 延续 OneSearch SID | 大模型产生关键词式 query reasoning；教师看关键词、学生只看原 query；CE+KL 自蒸馏；R-Drop/FGM/Focal；复合 reward+TPMA-GRPO | 地图复杂 query 使用教师侧结构化意图；线上无 CoT；按 GAOQ prefix 的真实语义做位置级信用分配 |
+| [OneSearch-V2](https://arxiv.org/html/2603.24422) | 延续 OneSearch SID | 大模型产生关键词式 query reasoning；教师看关键词、学生只看原 query；CE+KL 自蒸馏；R-Drop/FGM/Focal；复合 reward+TPMA-GRPO | 地图复杂 query 使用教师侧结构化意图；线上不生成长 CoT，关键词可异步缓存；按 GAOQ prefix 的真实语义做位置级信用分配 |
 | [OneReason](https://arxiv.org/abs/2606.06260) | 多模态 Itemic token；推荐推理基座 | token/item/relation/user 四粒度预训练；感知→推导→演化→推荐 cognition SFT；single-domain RL 后通过 RFT/MOPD 统一 | 地图对应 POI/SID 感知、地图关系推导、query/session 演化、最终 POI 搜索；当前官方主要发布 pretrain checkpoint，SFT/RL仍应视为研究方案 |
 | [OneRetrieval](https://arxiv.org/html/2606.13533) | Keyword-Aligned Encoding；可编辑 reserved slots；在线 SID→item lookup | Stage0 属性↔slot；Stage1 文本↔SID；Stage2 query-item/SID 协同共现；Stage3 个性化检索与 reserved-slot self-routing | 闭集 GAOQ 需补充热词、新 POI、版本迁移和运营可编辑性；生产初期保留倒排/delta 分支 |
 
@@ -113,7 +113,7 @@ SID合法/POI有效
 
 ### 校正一：OneSearch-V2 不是线上“先生成 CoT 再生成 SID”
 
-**[论文事实]** OneSearch-V2 的实验表明，让小型生成检索模型直接输出 textual CoT 再输出 SID 会显著伤害检索效果，而且增加线上延迟。有效方法是：
+**[论文事实]** OneSearch-V2 Tables 3～4 表明，让小型生成检索模型先输出 textual CoT 再输出 SID 会显著伤害检索效果；显式 CoT 还会增加线上生成延迟。有效方法是：
 
 ```text
 Teacher input = 原始query + 关键词式CoT/偏好校准
@@ -121,6 +121,8 @@ Student input = 原始query
 Target = 同一个SID序列
 Loss = CE + token-level KL + 稳定性正则
 ```
+
+论文还描述了 keyword CoT 的异步缓存和 raw-query 直出两条路径，但没有披露具体流量分配。
 
 ### 校正二：OneLoc 的距离 reward 不能直接成为地图通用 reward
 
@@ -254,7 +256,7 @@ viewport/沿途/路线约束
 
 | 用途 | 模型 | 结论 |
 |---|---|---|
-| 主生成模型 | [Qwen3.5-2B-Base](https://huggingface.co/Qwen/Qwen3.5-2B-Base) | 主推荐。2B、24层、混合 Gated DeltaNet/Attention；从 Base 做 CPT |
+| 主生成模型 | [Qwen3.5-2B-Base](https://huggingface.co/Qwen/Qwen3.5-2B-Base) | 主推荐。2B、24层、混合 Gated DeltaNet/Attention；checkpoint 含视觉塔，纯文本部署需验证显存与裁剪；从 Base 做 CPT |
 | 稳定对照 | [Qwen3-1.7B-Base](https://qwenlm.github.io/blog/qwen3/) | 标准 Transformer，生态成熟，用于确认 Qwen3.5 收益 |
 | 低延迟下界 | Qwen3.5-0.8B / Qwen3-0.6B | 确定质量-延迟曲线，也可实验 draft model |
 | POI文本encoder | [Qwen3-Embedding-0.6B](https://huggingface.co/Qwen/Qwen3-Embedding-0.6B) | 最高1024维、支持MRL，离线使用并做地图领域微调 |
@@ -442,6 +444,8 @@ GAOQ 不是普通 RQ，也不是人工字段树。其核心过程：
 
 同一个 `p2_17` 在不同 `p1` 下因此具有更一致的方向含义，降低 prefix-dependent ambiguity。
 
+**[论文事实]** OneSearch Table 2 中，`+keywords`、仅 L3 balanced、全层 balanced 的“L3 CUR / 整体 ICR”分别为 `1.64%/43.32%`、`7.03%/68.08%`、`0.51%/33.47%`；`48.95%` 是 L2 CUR，不是 `CUR_total`。论文据此指出全层均衡存在聚类坍缩风险。**[地图迁移]** 该结果不能直接外推到 GAOQ，只能作为“全层均衡 vs 仅末层均衡 vs 不均衡”消融的依据。
+
 ## 7.2 Map-GAOQ 主方案
 
 建议固定三层：
@@ -476,6 +480,7 @@ leaf: 每个prefix内部动态冲突序号，cap 256/512
 | F | 强化Geo权重 | GAOQ | 验证地理占比，防止同名异城 |
 | G | Q-Former多模态 | GAOQ | 仅在有变长视觉/图token时实验 |
 | H | Geo-first人工层级 | 分层K-Means | 对照 OneLoc 风格，检查远程搜索是否受损 |
+| I | 多路融合 | GAOQ 仅末层均衡 | 对照 OneSearch 全层均衡坍缩证据，检查 balanced K-Means 层级范围对 CUR/ICR 的影响 |
 
 所有对照必须使用相同生成 backbone、相同训练样本和相同 beam 设置。
 
@@ -1186,7 +1191,7 @@ Output:
 ## 9.4 SFT loss
 
 ```math
-L_{\mathrm{SFT}}=L_{\mathrm{CE}}+\lambda_mL_{\mathrm{MML}}+\lambda_dL_{\mathrm{KD}}+\lambda_rL_{\mathrm{RDrop}}+\lambda_uL_{\mathrm{UL}}
+L_{\mathrm{SFT}}=L_{\mathrm{CE}}+\lambda_mL_{\mathrm{MML}}+\lambda_dL_{\mathrm{KD}}+\lambda_rL_{\mathrm{RDrop}}+\lambda_aL_{\mathrm{adv}}+\lambda_uL_{\mathrm{UL}}
 ```
 
 说明：
@@ -1195,8 +1200,9 @@ L_{\mathrm{SFT}}=L_{\mathrm{CE}}+\lambda_mL_{\mathrm{MML}}+\lambda_dL_{\mathrm{K
 - `L_MML`：多个正确 POI 的边际似然。
 - `L_KD`：复杂意图内化。
 - `L_RDrop`：同输入不同 dropout 的输出分布一致性。
+- `L_adv`：FGM 在 embedding 扰动后执行第二次 forward/backward；OneSearch-V2 使用扰动输入上的 CE 与蒸馏 KL。这里的 `lambda_a` 是地图侧建议系数。
 - `L_UL`：仅用于非法 SID、下线 POI、明确错城市/错实体等高置信负例。
-- Focal loss 可在 SID 频率极度失衡后实验，不作为默认替代 CE。
+- OneSearch-V2 用 focal loss **替换**标准 CE；地图版只在确认 SID 频率失衡后实验该替换。
 
 位置加权版本：
 
@@ -1227,6 +1233,8 @@ GRPO：每轮0.5～2M prompts，每个prompt 8～16 rollouts
 SFT replay：10%～20%
 复杂/长尾/反事实prompt必须单独保量
 ```
+
+**[论文事实]** OneSearch 指出传统系统 RM 会限制生成模型上限，并观察到其 GRPO 变体产生更多不相关 SID；OneRec-V2 则讨论有限采样和 reward hacking。**[地图迁移]** RM 只作冷启动过渡，并应与生成模型使用相同输入空间。
 
 ## 10.2 DPO loss
 
@@ -1577,6 +1585,8 @@ prefix内相关POI占比
 
 不能仅用单一 ground-truth SID 的精确 token match。
 
+**[论文事实]** OneSearch-V2 的 SID overlap 是 TPMA 中的位置加权 prefix reward 与 marginal advantage，不是额外并列的独立标量。**[地图迁移]** 上述新增地图信号必须分别消融，不能写成论文结论。
+
 ---
 
 # 11. 分期实验节奏、训练量与 Go/No-Go
@@ -1769,7 +1779,7 @@ Aho-Corasick品牌/地名/类别词典
 
 - 离线按 `query` 或 `query×city` 去重生成；
 - 近线缓存热 query 的短 intent tokens 或候选 prefix；
-- 通过自蒸馏让缓存未命中时 student 仍可直接推理。
+- 自蒸馏 student 只依赖 raw query；论文未披露它与关键词缓存路径的流量分配。
 
 ## 12.8 Beam 与合法性约束
 
