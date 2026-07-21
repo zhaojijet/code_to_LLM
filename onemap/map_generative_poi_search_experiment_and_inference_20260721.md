@@ -1229,7 +1229,7 @@ RL-3：Map-GAOQ prefix-aware TPMA-GRPO
 
 ```text
 DPO：5～20M高置信pair
-GRPO：每轮0.5～2M prompts，每个prompt 8～16 rollouts
+GRPO：每轮0.5～2M prompts，默认每个prompt 8 rollouts；12/16仅用于复杂query或消融
 SFT replay：10%～20%
 复杂/长尾/反事实prompt必须单独保量
 ```
@@ -1600,7 +1600,7 @@ prefix内相关POI占比
 | P4 CPT-2 | query共现、session、反事实、新POI | 累计7～15B tokens | 长尾/冷启动、错城市 | 增益来自搜索而非头部记忆 |
 | P5 SFT | 三阶段SFT、多正例、复杂query蒸馏 | 10M→100～300M | HR/MRR、entity/branch、invalid | 达到传统强基线，复杂slice改善 |
 | P6 DPO | beam self-hard、地图规则、真实行为 | 5～20M pairs | relevance、branch、Recall回退 | 相关性提升且召回不被破坏 |
-| P7 GRPO/TPMA | on-policy、多目标地图reward | 每轮0.5～2M×8～16 | reward稳定、长尾、业务 | 无明显reward hacking或头部坍缩 |
+| P7 GRPO/TPMA | on-policy、多目标地图reward | 默认每轮0.5～2M×8；12/16仅作复杂query消融 | reward稳定、长尾、业务 | 无明显reward hacking或头部坍缩 |
 | P8 Shadow/A-B | 生成召回分支→融合→部分替代 | 1%→5%→20% | P99、改写率、错POI取消、导航/发单 | 满足护栏后再扩量 |
 
 ## 11.1 建议学习率搜索范围
@@ -1616,6 +1616,127 @@ GRPO KL coefficient：0.01 ～ 0.05
 ```
 
 需要监控新增 token embedding norm、不同 SID 位置梯度、通用能力回退和输出熵。
+
+## 11.2 Qwen3-1.7B 在 A800 上的训练时间估算
+
+以下是容量规划估算，不是未经实测的性能承诺。模型按 [`Qwen3-1.7B-Base`](https://huggingface.co/Qwen/Qwen3-1.7B-Base) 全参数训练计算：1.7B 总参数、1.4B 非 embedding 参数、28 层、GQA 16Q/8KV；[官方配置](https://huggingface.co/Qwen/Qwen3-1.7B-Base/blob/ea980cb0a6c2ae4b936e82123acc929f1cec04c1/config.json)给出 hidden size 2048、词表 151936 且输入/输出 embedding 权重共享。由于未指定 A800 的显存和形态，本节用可公开核验的 [NVIDIA A800 40GB Active 规格](https://www.nvidia.com/en-us/products/workstations/a800/)作算力基准：623.8 TFLOPS 稀疏 Tensor 峰值，结合结构化稀疏提供 2 倍吞吐，dense BF16 峰值按约 312 TFLOPS/GPU 估算。假设 4/8 卡位于同一节点并具有高速 GPU 互联；1.7B 模型使用 DDP 或 ZeRO-1，不使用 tensor parallel。A800 属于 [Ampere](https://www.nvidia.com/en-us/data-center/ampere-architecture/)，原生精度以 BF16/FP16、TF32 和 INT8/INT4 为主，原生 FP8 是 Hopper 及以后硬件能力。
+
+### 11.2.1 基础计算公式
+
+平均序列长度为 `S` 时，单个有效 token 完整 forward/backward 的近似计算量为：
+
+```math
+C_{\mathrm{token}}(S)\approx6P+12N_{\mathrm{layer}}dS
+```
+
+这里 `P` 是每 token 参与矩阵乘法的有效参数量。Qwen3-1.7B 的输入 embedding 与 LM head 权重共享，输入 lookup 计算可忽略，但 LM head 仍需完整投影，因此 `P≈1.4B+151936×2048≈1.71B`；估算取整为 `P=1.7e9`。代入 `N_layer=28`、`d=2048`：
+
+```text
+C_token(128) ≈ 10.288 GFLOPs/token
+C_token(256) ≈ 10.376 GFLOPs/token
+```
+
+训练 `D` 个非 padding 有效 token 的总计算量为：
+
+```math
+F_{\mathrm{train}}(D,S)=D\,C_{\mathrm{token}}(S)\approx6PD+12N_{\mathrm{layer}}dSD\approx6ND
+```
+
+最后一个近似就是常用的 `6ND`（此处 `N=P`）；`D` 是数据 token 数，`6ND` 是总 FLOPs，不是另一种“训练数据量”。
+
+不含 FlashAttention、packing 和 fused kernels 的基础吞吐定义为：
+
+```math
+R_{\mathrm{base}}=\frac{G F_{\mathrm{peak}}U_{\mathrm{base}}\eta_{\mathrm{scale}}}{C_{\mathrm{token}}}
+```
+
+`R_base` 和后续 `R` 均按非 padding 有效 token/s 记账；`U_base` 是普通 BF16、标准 attention、padding batch 基线的有效模型 FLOPs 利用率，包含 padding 浪费，但不包含下节三项加速收益。估算取 `U_base=30%`；多卡缩放效率取 `eta_4=90%`、`eta_8=78%`。以 `S=128` 为例，由此得到 4 卡约 `32.8K tokens/s`、8 卡约 `56.8K tokens/s`。BF16 是基础精度，不作为额外加速倍数。
+
+阶段时间统一计算为：
+
+```math
+T_{\mathrm{hour}}=\frac{N_{\mathrm{token}}K_{\mathrm{stage}}}{R\times3600}
+```
+
+其中 `N_token` 只统计非 padding 有效 token。
+
+| 阶段 | `K_stage` | 计入的额外工作量 |
+|---|---:|---|
+| CPT | 1.10 | 可选 KL retain 的 reference forward、验证和 checkpoint |
+| SFT | 1.35 | 选择性 KD/R-Drop/FGM、部署同构尾段、验证和 checkpoint |
+| DPO | 1.45 | reference forward、验证和 checkpoint；chosen/rejected token 已计入 `N_token`，NLL anchor 复用 chosen logits |
+| GRPO | 2.00 | rollout 采样、old/reference forward、reward、约15% SFT replay、验证和 checkpoint |
+
+### 11.2.2 加速项单独计算
+
+加速项不计入 `U_base`，而是逐项相乘：
+
+1. [FlashAttention-2](https://arxiv.org/abs/2307.08691)：短序列保守取 `S_FA=1.10`。论文在 2K～8K 序列上的收益更高，但不能直接外推到本文 64～256 token 场景。
+2. Padding-free/varlen packing：假设普通 batch 有 20% padding，`S_pack=1/(1-0.20)=1.25`，用于恢复 `U_base` 中单独保留的 padding 浪费。实际应以数据 padding 比例 `p` 代入 `1/(1-p)`。
+3. Fused RMSNorm/RoPE/MLP/optimizer：取 `S_fused=1.08`。
+
+```math
+S_{\mathrm{total}}=S_{\mathrm{FA}}S_{\mathrm{pack}}S_{\mathrm{fused}}=1.10\times1.25\times1.08=1.485
+```
+
+| 配置（`S=128`） | 无专项加速 | +FlashAttention | +Packing | +Fused kernels |
+|---|---:|---:|---:|---:|
+| 4×A800 | 32.8K | 36.0K | 45.0K | 48.6K tokens/s |
+| 8×A800 | 56.8K | 62.4K | 78.1K | 84.3K tokens/s |
+
+三项加速合计把纯训练时间降低约 `1-1/1.485=32.7%`；各百分比不能直接相加。
+
+### 11.2.3 CPT、SFT 与 RL 时间
+
+各阶段 token 口径：CPT 样本经 packing 后平均较长，吞吐按 `C_token(256)` 计算；SFT 按单 epoch、平均 `128 tokens/sample` 计算（吞吐用 `C_token(128)`），该平均值来自线上 prompt 的 64～96 tokens，再计入 SID response、caption、session、列表和教师蒸馏样本；DPO 按每个 pair 两条 `96-token prompt + 6-token response`（共 204 tokens/pair）计算；GRPO 每条 rollout 同样按 `96+6=102 tokens` 计算，默认 `8 rollouts/prompt`，12/16 只用于复杂 query 或消融。
+
+下表已经应用 `1.485×` 加速和各阶段 `K_stage`：
+
+| 阶段 | 数据规模 | 4×A800 | 8×A800 |
+|---|---:|---:|---:|
+| CPT POC | 1～3B tokens | 6.3～19.0h | 3.7～11.0h |
+| CPT 完整第一版 | 累计7～15B tokens | 44.4～95.0h | 25.6～54.8h |
+| SFT POC | 5～10M样本 | 4.9～9.9h | 2.8～5.7h |
+| SFT 中期 | 100～300M样本 | 98.7～296.1h | 56.9～170.8h |
+| SFT 全量 | 300～800M样本 | 296.1～789.5h | 170.8～455.5h |
+| DPO | 5～20M pairs | 8.4～33.8h | 4.9～19.5h |
+| GRPO 每轮 | 0.5～2M prompts×8 | 4.7～18.6h | 2.7～10.8h |
+
+GRPO 轮数未在论文或本文中固定，因此总时间必须写成：
+
+```math
+T_{\mathrm{RL}}=T_{\mathrm{DPO}}+N_{\mathrm{round}}T_{\mathrm{GRPO\ round}}
+```
+
+第一版以 `8 rollouts` 起步；若改为 12 或 16，仅 GRPO 部分分别乘 `1.5` 或 `2.0`。只有当 8 个 rollout 的有效非重复 SID 数不足、组内 reward 方差过小或复杂 query 覆盖明显不足时才扩组。
+
+典型完整配置取：CPT 10B tokens、SFT 200M 样本、DPO 10M pairs、两轮 `1M prompts×8 rollouts`：
+
+| 阶段 | 4×A800 | 8×A800 |
+|---|---:|---:|
+| CPT | 63.4h | 36.6h |
+| SFT | 197.4h | 113.9h |
+| RL | 35.5h | 20.5h |
+| 合计 | 296.3h（12.3天） | 170.9h（7.1天） |
+
+项目排期再为队列、故障和复跑预留约 10%，可按 4 卡约14天、8卡约8天规划。该时间不包含数据清洗、离线教师生成、POI encoder/GAOQ 构建、推理 engine 构建和线上 A/B。
+
+### 11.2.4 敏感项与实测校准
+
+- SFT 平均长度若为 96 tokens，SFT 时间乘 `0.75`；若为160 tokens，乘 `1.25`。
+- 若对全部 SFT 数据执行 R-Drop 与 FGM，而非只用于复杂/困难子集，SFT 时间再乘约 `1.8～2.2`。
+- 若每阶段训练多个 epoch，时间按实际 epoch 数线性增加。
+- 若 reward 依赖同卡运行的大型 RM，RL 时间再增加约 `10%～30%`。
+- 若8卡节点只有 PCIe 或成对 NVLink，缺少完整高速互联，8卡时间再乘约 `1.15～1.30`。
+- 本节按稳定对照 `Qwen3-1.7B` 估算；主模型 `Qwen3.5-2B` 参数量约为其 `1.2` 倍。64～256 token 短序列下 `6P` 项占 token 计算量的 98% 以上（注意力项不足 2%），计算量近似随参数线性，因此主模型各阶段时间可按 `×1.2` 近似放大；Gated DeltaNet 线性注意力与标准全注意力在该长度下的计算差可忽略，正式排期前仍须按下述实测方法校准。
+
+上线前必须在真实节点分别运行 CPT、SFT、GRPO 各 300～500 steps：
+
+```math
+R_{\mathrm{measured}}=\frac{\mathrm{global\ batch\ tokens}\times\mathrm{steps}}{\mathrm{elapsed\ seconds}}
+```
+
+再以 `N_equivalent_tokens/R_measured` 替换理论时间。训练可使用 padding-free packing 提升吞吐，但最后 5%～10% SFT/RL 应使用线上同构的 64～96 token prompt、3～4 SID 解码深度和相同 prefix vocabulary mask，避免 train-serve mismatch。
 
 ---
 
@@ -1818,7 +1939,7 @@ Aho-Corasick品牌/地名/类别词典
 工程要求：
 
 ```text
-BF16/FP8或验证后的INT8
+A800使用BF16/FP16或验证后的INT8；原生FP8仅在Hopper及以后硬件实验
 TensorRT-LLM/vLLM/SGLang
 CUDA Graph
 deadline-aware micro-batching
