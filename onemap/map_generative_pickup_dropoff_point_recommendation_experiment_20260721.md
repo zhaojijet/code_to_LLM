@@ -1,9 +1,13 @@
 # 地图上下车点生成式推荐：完整实验、训练样本与在线推理方案
 
-> 版本：2026-07-21  
-> 范围：用户已选择起点或终点后，为其推荐便于乘客与司机见面的上车点或下车点（Pickup/Drop-off，PUDO）。  
-> 本文暂不把司机派单、拼车全局匹配和运力调度并入生成模型主任务，但会给出派单后动态重推荐和路缘容量协调的扩展方案。  
-> 本文沿用《地图 POI 生成式搜索》文档的分析框架，覆盖任务定义、相关工作、开源基座、点位 Encoder、SID、CPT、SFT、RL、样本构造、loss/reward、分期实验和 200～300ms 在线推理。  
+> 版本：2026-07-24（按“起点/终点为两次独立、发单前且司机未分配的推荐请求”校正）
+>
+> 范围：用户选择起点后触发一次上车点推荐，选择终点后另触发一次下车点推荐；两次请求都发生在发单前，彼此不联合建模。
+>
+> 本文不把已分配司机状态、派单后改点、行程中改点、拼车匹配和运力调度并入生成模型主任务；订单后的司机轨迹与履约结果只可作为延迟监督标签。
+>
+> 本文沿用《地图 POI 生成式搜索》文档的分析框架，覆盖任务定义、相关工作、开源基座、点位 Encoder、SID、CPT、SFT、RL、样本构造、loss/reward、分期实验和 200～300ms 在线推理。
+>
 > 文中标为“建议”的数据规模、loss 权重和延迟拆分均是实验起点，不是论文公开结论。
 
 ---
@@ -18,18 +22,18 @@
 
 核心符号：
 
-- `a_o`：用户选择的起点 anchor，可为 POI、AOI、地址或经纬度。
-- `a_d`：用户选择的终点 anchor。
-- `g`：用户设备定位及定位精度。
-- `r`：一次点位推荐请求。
-- `u`：候选 action-point。
-- `c`：用户、司机、道路和环境组成的在线上下文。
-- `d`：已匹配司机及其位置、朝向、接驾路线；派单前为空。
-- `t`：时间、日期、节假日。
-- `w`：天气和可见度。
-- `h`：当前 session 和用户显式授权使用的短期历史。
-- `b`：乘客步行、无障碍、行李等显式约束。
-- `A^+(c)`：上下文 `c` 下可接受的多正确点位集合。
+- $\tau$：当前独立请求的类型，$\tau\in\{\mathrm{PU},\mathrm{DO}\}$。
+- $a$：当前请求唯一的已选 anchor；PU 请求中是已选起点，DO 请求中是已选终点。
+- $g_\tau$：当前请求可用的乘客定位信号；PU 通常使用，DO 通常为空或只保留与终点局部定位有关的信号。
+- $r$：一次点位推荐请求。
+- $u$：候选 action-point。
+- $c_\tau$：由 $(\tau,a,g_\tau,t,w,b,h)$ 和请求时可见的道路/点位状态组成的在线上下文。
+- $y_{\mathrm{post}}$：订单发出、司机分配及履约后产生的轨迹、等待、沟通和完成结果，只用于标签、reward 或离线评估。
+- $t$：时间、日期、节假日。
+- $w$：天气和可见度。
+- $h$：当前 session 和用户显式授权使用的短期历史。
+- $b$：乘客步行、无障碍、行李等显式约束。
+- $A^+(c)$：上下文 $c$ 下可接受的多正确点位集合。
 
 本文不把 action-point 简化为一个经纬度。建议定义：
 
@@ -46,16 +50,17 @@ action_point =
 生成模型的目标是：
 
 ```math
-P_\theta(\mathrm{SID}(u)\mid a_o,a_d,g,\mathrm{stage},d,t,w,b,h)
+P_\theta(\mathrm{SID}_\tau(u)\mid \tau,a,g_\tau,t,w,b,h)
 ```
 
-其中 `stage` 至少区分：
+对应两次互不依赖的调用：
 
 ```text
-PRE_DISPATCH：司机尚未分配
-POST_DISPATCH：司机已分配，可使用司机位置、朝向和接驾路线
-IN_TRIP_DROPOFF：行程中动态确认或调整下车点
+选择起点：r_PU=(PU, selected_origin, pickup_local_context) → pickup SID
+选择终点：r_DO=(DO, selected_destination, dropoff_local_context) → dropoff SID
 ```
+
+主任务中不提供另一端点、`stage` 或已分配司机 `d`。因为两类请求均为发单前，`stage` 是常量；司机尚未分配，`d` 不存在。即使订单完成后的司机轨迹可用于训练标签，也不得泄漏到请求时输入。
 
 ---
 
@@ -70,12 +75,12 @@ IN_TRIP_DROPOFF：行程中动态确认或调整下车点
 | 点位候选库和 action-point 定义 | 是 | 第4、7节 | 操作类型、道路侧向、楼层和接入方向均进入点位定义 |
 | Text/Geo/Graph/Behavior/Visual Encoder | 是 | 第6节 | 静态点位与动态上下文分离 |
 | Qwen Embedding、FAMAE、Q-Former | 是 | 第6节 | 分别承担文本、字段行为和变长多模态融合 |
-| 上下车点 SID 与 Map-GAOQ | 是 | 第7节 | 双 namespace、稳定属性编码、动态状态不入 SID |
+| 上下车点 SID | 是 | 第7节 | Action namespace + H3 地理层级前缀 + stable local leaf；GAOQ 仅作局部后缀消融 |
 | CPT 样本构造与示例 | 是 | 第8节 | 共22类 |
 | SFT 样本构造与示例 | 是 | 第9节 | 共25类 |
 | RL/DPO/GRPO 样本构造与示例 | 是 | 第10节 | 共23类 |
 | CPT/SFT/RL loss | 是 | 第8～10节 | NTP、MML、KD、DPO、GRPO、prefix credit |
-| 地图点位 reward | 是 | 第10节 | 乘客、司机、会合、行程、路缘和业务六类目标 |
+| 地图点位 reward | 是 | 第10节 | 乘客、通用车辆可达、会合、路缘和业务目标；履约数据仅作延迟反馈 |
 | 分期实验和训练量 | 是 | 第11节 | 从点位库审计到 Shadow/A-B |
 | 在线 Prompt 与 200～300ms 架构 | 是 | 第12节 | 无在线 CoT，固定长度 SID，Top-K 来自 beam |
 | 风险、指标和上线护栏 | 是 | 第13节 | 安全、法规、容量、反馈偏差和 SID churn |
@@ -88,50 +93,38 @@ IN_TRIP_DROPOFF：行程中动态确认或调整下车点
 
 1. 构建经过地图、道路法规和运营审核的 action-point 库，不生成任意经纬度。
 2. 用文本、结构、精确空间、步行图、车行图、视觉和行为多路 Encoder 得到静态点位表征。
-3. 使用 action-conditioned Map-GAOQ 构造固定长度 SID；`<PU>` 与 `<DO>` 使用独立 namespace。
-4. 动态交通、施工、路缘拥挤、天气和司机实时状态只作为生成上下文与 rerank 特征，不写入稳定 SID。
+3. 使用 `<PU/DO> + R5 cell + R5→R9相对子网格序号 + R9→R13相对子网格序号 + stable local leaf` 构造固定长度 SID。
+4. 请求时可见的交通、施工、路缘拥挤和天气只作为生成上下文与 rerank 特征，不写入稳定 SID。
 5. 依次进行 SID token warm-up、CPT、多阶段 SFT、高置信 DPO，最后才实验 on-policy GRPO/TPMA。
 6. 线上每条 beam 只生成一个合法点位 SID；Top-K 来自并行 beam，不串行生成自然语言解释。
 7. 模型输出后必须经过合法性、可达性、步行预算、道路侧向和动态关闭硬过滤，再做轻量路线重排。
 8. 第一阶段保留现有规则/LambdaMART/DeepFM/图模型作为 fallback 和并行候选源。
 
-## 2.2 三种推荐状态
+## 2.2 两类独立的发单前请求
 
-### 状态A：只选择了一个端点
-
-例如用户先选择“上海虹桥火车站”为起点，此时终点尚未知。
-
-可使用：
+### 请求A：选起点后推荐上车点
 
 ```text
-起点AOI/POI
-用户GPS及精度
-时间、天气
-显式步行/无障碍约束
-短期历史
+task=<TASK_PU>
+anchor=用户刚选择的起点
+request-local context=用户GPS及精度、起点内语义位置、时间/天气、显式约束、短期历史
+output=<PU> namespace 内的一个或多个 pickup SID
 ```
 
-不能假设目的地方向。此时应偏向稳定、醒目、合法、容易步行到达且历史会合成功率高的点位。
+此时不读取终点，也没有已分配司机。目标是从起点周边选择合法、乘客可达、通用车辆可达、醒目且历史会合表现好的上车点。
 
-### 状态B：起终点均已选择，但尚未派单
-
-此时可使用 OD 方向优化道路侧向，减少车辆掉头和首尾段绕行。MPLRec 等工作已经说明，目的地方向会显著影响上车点选择。
-
-### 状态C：司机已经分配
-
-增加：
+### 请求B：选终点后推荐下车点
 
 ```text
-driver_location
-driver_heading
-driver_approach_route
-driver_ETA
-vehicle_type
-current_traffic
-curb_capacity
+task=<TASK_DO>
+anchor=用户刚选择的终点
+request-local context=终点入口/子区域、时间/天气、显式约束、短期历史
+output=<DO> namespace 内的一个或多个 dropoff SID
 ```
 
-可进行动态上车点调整，但需要明确展示步行代价，并允许用户保留原点。
+此时不读取起点，也没有已分配司机。目标是选择服务正确入口、下车合法安全、下车后步行成本低且易识别的下车点。
+
+两类请求可共享 backbone、点位 Encoder、H3 child-position token embedding 和部分索引结构，但 local leaf 表、训练记录、合法 mask、reward 权重、缓存 key 和线上指标必须按 $\tau$ 分开。当前实验不做完整 OD 条件化、上下车点联合生成或派单后重推荐。
 
 ## 2.3 与 POI 搜索的根本差异
 
@@ -154,7 +147,7 @@ SID合法、点位有效
 → 法规、安全、道路侧向、楼层正确
 → 满足显式步行/无障碍约束
 → 降低司乘会合失败和等待
-→ 降低司机绕行、掉头和行程首尾段成本
+→ 降低点位本身的通用车辆驶入/驶出复杂度
 → 优化履约、体验和路缘系统外部性
 ```
 
@@ -163,9 +156,8 @@ SID合法、点位有效
 ### 上车点主要矛盾
 
 - 乘客从当前真实位置走到点位。
-- 司机从实时位置接近点位。
-- 双方 ETA 同步。
-- 需要减少电话、聊天、找车、过街和司机等待。
+- 司机尚未分配，因此只能评估点位的静态/历史车辆可达性，不能使用某位司机的实时位置或朝向。
+- 需要减少未来可能发生的电话、聊天、找车、过街和等待；这些是订单后的监督信号，不是线上输入。
 - 机场、车站、商场等场景存在指定网约车区和楼层。
 
 ### 下车点主要矛盾
@@ -173,8 +165,8 @@ SID合法、点位有效
 - 点位是否服务正确入口或建筑区域。
 - 下车后步行到最终 anchor 的成本。
 - 是否可安全停车、开门和携带行李。
-- 单行路、隔离带和目的地方向造成的尾段绕行。
-- 行程中交通变化可能导致动态调整。
+- 单行路、隔离带、道路侧向和通用车辆驶入/驶出是否合理。
+- 本期只处理选终点后的发单前推荐，不处理行程中动态调整。
 
 建议共享 backbone 和静态点位 Encoder，但使用：
 
@@ -184,6 +176,8 @@ SID合法、点位有效
 独立 reward 权重
 独立核心评估切片
 ```
+
+这里的“共享”是参数共享，不是把一次订单的起点和终点拼成一个联合输入。
 
 ## 2.5 “生成式”不等于生成坐标
 
@@ -231,6 +225,8 @@ GraphSAGE/HGT + ranker
 | [Dynamic Pick-up Point Recommendation](https://doi.org/10.1016/j.knosys.2025.114543) | 同时考虑步行、等待、交通和车费；点位评分后用自适应 Kuhn-Munkres 做全局匹配 | 点位个体效用与系统容量协调是两个阶段 |
 | [Capacity-Aware Dynamic PUP Recommendation](https://papers.ssrn.com/abstract=6592901) | pair-level operational score 与动态路缘容量协调分离 | 生成模型适合产生/评分候选，容量分配应由后置优化器完成 |
 
+表中的目的地方向、预计车费、已分配车辆或全局匹配是相关工作的设定，不是本产品协议。当前迁移只保留单 anchor 下可用的道路/入口知识、点位通用车辆可达性，以及订单后的结果监督；不能因为论文使用过某字段，就把另一端点或司机状态加入线上输入。MPLRec 式基线也必须裁剪到与生成模型相同的单 anchor 特征集合后再比较。
+
 这些研究不能直接证明生成式推荐有效，但共同约束了正确问题定义：
 
 ```text
@@ -249,7 +245,7 @@ GraphSAGE/HGT + ranker
 | [OpenOneRec](https://arxiv.org/abs/2512.24762) / [官方仓库](https://github.com/Kuaishou-OneRec/OpenOneRec) | Itemic-Text Alignment→Co-Pretrain→多任务 SFT→蒸馏→Rec-GRPO | SID token warm-up、点位/道路 CPT、多任务 SFT、通用知识保持和最终 GRPO 分阶段进行 |
 | [OneLoc](https://arxiv.org/html/2508.14646) | Geo-aware SID；邻域 prompt；地理和业务 reward；DPO | 最接近本任务，但不能只用距离；需替换为步行图、车行图、道路侧向和操作合法性 reward |
 | [OneSearch](https://arxiv.org/html/2509.03236) | query/item 表征协同；RQ-KMeans+OPQ；多阶段 SFT；RM+listwise DPO+真实行为 | 构造 context/action-point 协同空间；从静态 grounding 到在线同构输入，再到多点位 listwise 训练 |
-| [OneSearch-V2](https://arxiv.org/html/2603.24422) | 教师侧关键词推理；学生看原输入；CE+KL 自蒸馏；TPMA-GRPO | 教师将复杂道路事实压缩为结构化意图，学生输入紧凑上下文；按 GAOQ prefix 做 token credit |
+| [OneSearch-V2](https://arxiv.org/html/2603.24422) | 教师侧关键词推理；学生看原输入；CE+KL 自蒸馏；TPMA-GRPO | 教师将复杂道路事实压缩为结构化意图，学生输入紧凑上下文；主方案按确定性 H3 prefix 和 local leaf 做 token credit，local GAOQ 只作消融 |
 | [OneReason](https://arxiv.org/abs/2606.06260) | token/item/relation/user 多粒度预训练；认知 SFT；多域 RL 统一 | 对应点位 token、点位属性、步行/车行图关系、用户出行习惯和最终点位决策 |
 | [OneRetrieval](https://arxiv.org/html/2606.13533) | 属性↔slot、文本↔SID、协同共现、reserved-slot self-routing | 支持临时接送区、新增出入口和大型活动运营点位；仍需 delta 索引与审核 |
 
@@ -270,9 +266,9 @@ Target = 同一个点位SID
 Loss = CE + token-level KL + 稳定性正则
 ```
 
-### 校正三：动态状态不能进入 SID 码本
+### 校正三：动态状态不能进入 SID 地理前缀或 local leaf
 
-如果交通速度、天气、拥挤或司机位置进入点位 embedding 后再量化，SID 会频繁变化。SID 只编码相对稳定的点位本体和 action 属性。
+H3 地理前缀只从 action-point 库中的标准代表坐标生成，不能使用用户 GPS。交通速度、天气、拥挤或司机位置既不能改变 H3 prefix，也不能参与 stable local leaf 分配；它们只进入请求上下文和 reranker。
 
 ### 校正四：生成候选与全局协调是两层问题
 
@@ -315,9 +311,26 @@ Loss = CE + token-level KL + 稳定性正则
   "lighting": "good",
   "signage": ["网约车", "6号柱"],
   "status": "active",
-  "version": 17
+  "version": 17,
+  "sid_fields": {
+    "sid_version": "sid_v4",
+    "h3_library_version": "<pinned_build_version>",
+    "r5_dictionary_version": "r5_dict_v1",
+    "leaf_table_version": "leaf_table_v18",
+    "canonical_lat": 31.196,
+    "canonical_lon": 121.315,
+    "r5_cell": "<computed_r5_cell>",
+    "r9_cell": "<computed_r9_cell>",
+    "r13_cell": "<computed_r13_cell>",
+    "r5_token": "<r5_0187>",
+    "child_5_to_9_pos": 782,
+    "child_9_to_13_pos": 1140,
+    "local_leaf": 3
+  }
 }
 ```
+
+`sid_fields` 中的数值仅示意字段结构。生产数据必须先由标准代表坐标计算 R13 cell，再使用 H3 `cellToParent` 和 `cellToChildPos` 派生父 cell 与相对子网格序号，不能分别从经纬度独立计算 R5/R9/R13 后拼接。
 
 ## 4.2 地图与图数据
 
@@ -362,47 +375,189 @@ SemanticGraph：
 
 ## 4.4 行为与履约日志
 
+日志建议明确分成四段：
+
+```text
+request_context：推荐发生前可见，可作为当前请求模型输入
+exposure：模型/策略实际展现的候选及曝光概率
+interaction：用户在发单前对候选的选择、切换或拖点行为
+post_order_outcome：发单、分配司机及履约后才产生，只能作为延迟标签
+```
+
+### 4.4.1 选起点后的上车点推荐日志
+
 ```json
 {
-  "request_id": "r_001",
-  "stage": "POST_DISPATCH",
-  "anchor_origin": "虹桥火车站",
-  "anchor_destination": "陆家嘴国金中心",
-  "gps": {"lat": 31.197, "lon": 121.314, "accuracy_m": 45},
-  "driver_state": {
-    "road_segment": "road_130",
-    "heading": 210,
-    "eta_s": 420
+  "request_id": "pudo_req_pu_001",
+  "session_id": "order_draft_001",
+  "request_type": "PU",
+  "request_ts": "2026-07-24T18:20:00+08:00",
+  "feature_cutoff": "before_order_submit",
+  "request_context": {
+    "selected_anchor": {
+      "anchor_id": "poi_hongqiao_station",
+      "name": "虹桥火车站",
+      "anchor_type": "POI"
+    },
+    "user_location": {
+      "lat": 31.197,
+      "lon": 121.314,
+      "accuracy_m": 45,
+      "semantic_subarea": "西出站口"
+    },
+    "time_bucket": "weekday_evening_peak",
+    "weather": "heavy_rain",
+    "explicit_constraints": {
+      "walk_budget_m": 300,
+      "wheelchair_accessible": false,
+      "large_luggage": true
+    }
   },
-  "shown_points": ["ap_A", "ap_B", "ap_C"],
-  "shown_propensity": [0.51, 0.31, 0.18],
-  "accepted_point": "ap_B",
-  "manual_drag": false,
-  "actual_board_point": "ap_B",
-  "rider_walk_s": 260,
-  "driver_detour_s": 45,
-  "rider_wait_s": 70,
-  "driver_wait_s": 35,
-  "call_count": 0,
-  "chat_count": 0,
-  "completed": true,
-  "cancel_reason": null
+  "exposure": {
+    "policy_version": "pudo_gen_v3",
+    "sid_version": "sid_v4",
+    "sid_catalog_version": "pudo_sid_catalog_v18",
+    "h3_library_version": "<pinned_build_version>",
+    "r5_dictionary_version": "r5_dict_v1",
+    "leaf_table_version": "leaf_table_v18",
+    "candidates": [
+      {
+        "point_id": "ap_hongqiao_west_b1_zone6_pickup",
+        "position": 1,
+        "exposure_propensity": 0.51
+      },
+      {
+        "point_id": "ap_hongqiao_west_b1_zone8_pickup",
+        "position": 2,
+        "exposure_propensity": 0.31
+      },
+      {
+        "point_id": "ap_hongqiao_east_b1_pickup",
+        "position": 3,
+        "exposure_propensity": 0.18
+      }
+    ]
+  },
+  "interaction": {
+    "default_point": "ap_hongqiao_west_b1_zone6_pickup",
+    "accepted_point": "ap_hongqiao_west_b1_zone8_pickup",
+    "selection_action": "SWITCH_CANDIDATE",
+    "manual_drag": false,
+    "decision_latency_ms": 1800
+  },
+  "post_order_outcome": {
+    "outcome_available_ts": "2026-07-24T18:38:00+08:00",
+    "actual_board_point": "ap_hongqiao_west_b1_zone8_pickup",
+    "actual_board_match_distance_m": 12,
+    "actual_point_match_confidence": 0.94,
+    "rider_walk_s": 260,
+    "assigned_driver_approach_s": 310,
+    "assigned_driver_detour_s": 45,
+    "rider_wait_s": 70,
+    "driver_wait_s": 35,
+    "call_count": 0,
+    "chat_count": 0,
+    "wrong_point_feedback": false,
+    "point_related_complaint": false,
+    "completed": true,
+    "cancel_reason": null
+  }
 }
 ```
 
-还应记录：
+### 4.4.2 选终点后的下车点推荐日志
+
+```json
+{
+  "request_id": "pudo_req_do_001",
+  "session_id": "order_draft_001",
+  "request_type": "DO",
+  "request_ts": "2026-07-24T18:21:10+08:00",
+  "feature_cutoff": "before_order_submit",
+  "request_context": {
+    "selected_anchor": {
+      "anchor_id": "poi_shanghai_childrens_medical_center",
+      "name": "上海儿童医学中心",
+      "anchor_type": "POI"
+    },
+    "destination_subarea": "急诊入口",
+    "time_bucket": "weekday_evening_peak",
+    "weather": "heavy_rain",
+    "explicit_constraints": {
+      "post_walk_budget_m": 200,
+      "wheelchair_accessible": true,
+      "large_luggage": false
+    }
+  },
+  "exposure": {
+    "policy_version": "pudo_gen_v3",
+    "sid_version": "sid_v4",
+    "sid_catalog_version": "pudo_sid_catalog_v18",
+    "h3_library_version": "<pinned_build_version>",
+    "r5_dictionary_version": "r5_dict_v1",
+    "leaf_table_version": "leaf_table_v18",
+    "candidates": [
+      {
+        "point_id": "ap_scmc_emergency_night_dropoff",
+        "position": 1,
+        "exposure_propensity": 0.58
+      },
+      {
+        "point_id": "ap_scmc_outpatient_south_dropoff",
+        "position": 2,
+        "exposure_propensity": 0.27
+      },
+      {
+        "point_id": "ap_scmc_main_gate_dropoff",
+        "position": 3,
+        "exposure_propensity": 0.15
+      }
+    ]
+  },
+  "interaction": {
+    "default_point": "ap_scmc_emergency_night_dropoff",
+    "accepted_point": "ap_scmc_emergency_night_dropoff",
+    "selection_action": "KEEP_DEFAULT",
+    "manual_drag": false,
+    "decision_latency_ms": 620
+  },
+  "post_order_outcome": {
+    "outcome_available_ts": "2026-07-24T19:12:00+08:00",
+    "actual_alight_point": "ap_scmc_emergency_night_dropoff",
+    "actual_alight_match_distance_m": 9,
+    "actual_point_match_confidence": 0.97,
+    "post_dropoff_walk_s": 95,
+    "destination_entrance_reached": true,
+    "assigned_driver_dropoff_detour_s": 30,
+    "stop_duration_s": 28,
+    "unsafe_door_open_event": false,
+    "destination_renavigation_count": 0,
+    "wrong_point_feedback": false,
+    "point_related_complaint": false,
+    "completed": true,
+    "cancel_reason": null
+  }
+}
+```
+
+两个请求可以使用同一个 `session_id` 做离线串联和数据质检，但 PU 样本不能读取已选终点，DO 样本也不能读取已选起点。`post_order_outcome` 在结果尚未产生时应为 `null` 或不落字段，只能在 feature cutoff 之后追加，用于标签、reward 和离线评估，不能回填为当前请求模型输入。
+
+推荐统一记录以下行为枚举和归因字段：
 
 ```text
-用户保留原点
-切换候选
-手动拖图改点
-到达点位后的GPS轨迹
-司机到达、等待、驶离轨迹
-实际上车/下车地图匹配结果
-司机或乘客“位置不对”反馈
-安全/交通投诉
-接驾路线重算次数
-终点入口二次导航
+selection_action：
+  KEEP_DEFAULT
+  SWITCH_CANDIDATE
+  MANUAL_DRAG
+  NO_SELECTION
+
+outcome attribution：
+  actual point地图匹配结果与置信度
+  乘客/车辆轨迹与事件时间窗
+  “位置不对”、安全和交通投诉
+  接驾路线重算、等待和沟通次数
+  终点入口二次导航
+  点位相关取消与非点位取消的拆分
 ```
 
 ## 4.5 候选点库构建
@@ -494,17 +649,17 @@ policy-version holdout
 festival/event holdout
 heavy-rain/night holdout
 cross-city holdout
-post-dispatch distribution shift
+request-schema/version holdout
 ```
 
-同一物理点的 pickup/dropoff sibling、同一订单和相邻轨迹片段不得跨集合泄漏。
+同一物理点的 pickup/dropoff sibling、同一发单 session 的两次独立请求、同一订单和相邻轨迹片段不得跨集合泄漏。
 
 ## 4.9 必备评估切片
 
 ```text
-pickup / dropoff
-only-one-anchor / full-OD
-pre-dispatch / post-dispatch / in-trip
+pickup request / dropoff request
+PU有用户GPS / PU弱GPS / DO无当前GPS
+单anchor请求 / anchor子区域明确 / anchor子区域缺失
 普通街道 / 小区 / 商场 / 医院 / 校园
 机场 / 火车站 / 大型会展 / 体育场
 单行路 / 隔离带 / 高架 / 地下 / 多楼层
@@ -547,14 +702,13 @@ Post-trained 大模型主要作为离线教师，不进入 200～300ms 主链路
 
 ```text
 <TASK_PU>/<TASK_DO>
-<PRE_DISPATCH>/<POST_DISPATCH>/<IN_TRIP>
 <ANCHOR_POI>/<ANCHOR_AOI>/<ANCHOR_GPS>
+<SEMANTIC_SUBAREA_KNOWN>/<SEMANTIC_SUBAREA_UNKNOWN>
 <GPS_ACC_0_10>/<GPS_ACC_10_50>/<GPS_ACC_50_PLUS>
 <WALK_BUDGET_0_100>/<...>
 <RAIN>/<NIGHT>/<ACCESSIBLE>
-<DRIVER_HEADING_NW>/<DRIVER_ETA_5_10>
 <TRAFFIC_SLOW>/<CURB_BUSY>
-<SID_V3>
+<SID_V4>
 ```
 
 连续变量优先做业务可解释分桶，并保留少量归一化数值特征供 context projector 使用。
@@ -657,7 +811,7 @@ legal pickup/dropoff prediction
 
 ```text
 乘客步行图
-司机车行图
+车辆车行图
 AOI/入口语义图
 历史替代点图
 ```
@@ -676,6 +830,69 @@ same_physical_point
 alternative_to
 ```
 
+### 6.4.1 示例：虹桥西出站口上车点的四张子图
+
+假设当前独立请求为：
+
+```text
+task=<TASK_PU>
+selected_anchor=虹桥火车站
+semantic_subarea=西出站口
+candidate_P=西交通中心B1网约车区6号柱
+candidate_Q=东交通中心网约车区
+```
+
+同一个候选点 `P` 在四张图中有不同的邻居和关系：
+
+```mermaid
+flowchart LR
+    subgraph Ped["乘客步行图"]
+        Exit["西出站口"] -->|"walk_connected: 电梯+连廊200m"| Pped["候选P：西B1 6号柱"]
+        Exit -.->|"requires_crossing / 路径复杂"| Qped["候选Q：东交通中心"]
+    end
+
+    subgraph Veh["车辆车行图"]
+        Entry["申虹路入口"] -->|"drive_reachable"| Lane["B1网约车车道"]
+        Lane -->|"drive_reachable"| Pveh["候选P"]
+        Reverse["反向车道"] -.->|"requires_U_turn"| Pveh
+    end
+
+    subgraph Sem["AOI/入口语义图"]
+        Psem["候选P"] -->|"inside_AOI"| Hub["虹桥综合交通枢纽"]
+        Psem -->|"serves_POI"| WestExit["虹桥火车站西出站口"]
+    end
+
+    subgraph Alt["历史替代点图"]
+        Palt["候选P"] -->|"alternative_to"| P8["西B1 8号柱"]
+        Palt -.->|"weak_alternative"| East["东交通中心上客点"]
+    end
+
+    Pped --> Fuse["HGT / relation-aware fusion"]
+    Pveh --> Fuse
+    Psem --> Fuse
+    Palt --> Fuse
+    Fuse --> EGraph["候选P的 e_graph"]
+```
+
+每张子图先独立聚合，再做关系感知融合：
+
+```math
+h_g(u)=\mathrm{GNN}_g\left(u,\mathcal{N}_g(u),\mathcal{R}_g\right)
+```
+
+```math
+e_{\mathrm{graph}}(u)=\mathrm{LayerNorm}\left(\sum_{g\in\{\mathrm{ped},\mathrm{veh},\mathrm{sem},\mathrm{alt}\}}\alpha_gW_gh_g(u)\right)
+```
+
+这个例子中：
+
+- 步行图说明 `P` 与西出站口连通，`Q` 的路径更复杂。
+- 车行图说明 `P` 可从合法车道驶入，但某些反向来路需要掉头；这是点位的通用路网属性，不是当前司机状态。
+- 语义图说明 `P` 确实服务西出站口，而不是只与火车站主体坐标接近。
+- 替代点图保留 6 号柱与 8 号柱的可替代性，支持多正例与故障降级。
+
+动态拥挤、临时关闭和天气不写入上述稳定图 embedding，而在请求上下文或后置 reranker 中处理。
+
 ## 6.5 BehaviorEncoder
 
 构建异构图：
@@ -683,7 +900,7 @@ alternative_to
 ```text
 request/context node
 user/session node
-driver approach bucket node
+post-order outcome bucket node
 action-point node
 AOI/POI node
 ```
@@ -704,6 +921,49 @@ completed
 
 可使用 Two-Tower、LightGCN、HGT 或时序 Transformer。必须做时间衰减和曝光 propensity 修正。
 
+### 6.5.1 示例：一次 PU 请求形成的行为异构图
+
+沿用第 4.4 节的 `pudo_req_pu_001`：
+
+```mermaid
+flowchart LR
+    User["匿名用户桶"] -->|"has_session"| Session["session: order_draft_001"]
+    Session -->|"contains_request"| Req["PU request: 西出站口"]
+
+    Req -->|"shown: pos=1, p=0.51"| A["点A：西B1 6号柱"]
+    Req -->|"shown: pos=2, p=0.31"| B["点B：西B1 8号柱"]
+    Req -->|"shown: pos=3, p=0.18"| C["点C：东交通中心"]
+    Req -->|"accepted / SWITCH_CANDIDATE"| B
+
+    A -->|"serves_POI"| AOI["虹桥火车站"]
+    B -->|"serves_POI"| AOI
+    C -->|"serves_POI"| AOI
+
+    Req -.->|"outcome_label_only"| Outcome["HIGH_QUALITY_MEETING"]
+    Outcome -.->|"boarded_at: 12m, confidence=0.94"| B
+    Outcome -.->|"completed"| Done["COMPLETED"]
+```
+
+对应的核心边记录可以写成：
+
+```text
+(request_pu_001, shown{position=1, propensity=0.51}, point_A)
+(request_pu_001, shown{position=2, propensity=0.31}, point_B)
+(request_pu_001, accepted, point_B)
+(outcome_pu_001, boarded_at{distance=12m, confidence=0.94}, point_B)
+(request_pu_001, has_outcome, HIGH_QUALITY_MEETING)
+```
+
+训练时的使用方式：
+
+1. `point_B` 是接受且实际上车匹配的强正例。
+2. `point_A` 只是曝光未选，默认是未知样本，不能直接当强负例。
+3. `point_C` 只有在存在过街、错侧或明确失败证据时才构造负例。
+4. `shown` 边携带 position 和 propensity，用于 IPS/SNIPS 或采样校正。
+5. outcome 虚线边发生在发单和履约之后，只能作为监督目标；生成当前请求 embedding 时必须按时间截断，禁止沿这些边回传未来信息。
+
+DO 请求必须新建独立的 request node，使用 `alighted_at`、下车后步行和入口到达结果；不能把同一 session 中 PU 请求的已选起点或 `boarded_at` 边拼入 DO 在线输入。
+
 ## 6.6 FAMAE 的作用
 
 FAMAE 不替代 Qwen embedding，而是补充字段和行为可预测性：
@@ -716,7 +976,7 @@ mask serves_POI → 从地标和行为恢复
 mask accessibility → 从设施关系恢复
 ```
 
-这类训练能让点位 embedding 更适合 SID 量化，而不仅是文本相似。
+这类训练让点位 embedding 更适合 context–point 检索、local leaf 辅助任务和可选的 local GAOQ 后缀，而不仅是文本相似。主方案的 H3 地理前缀不由 embedding 量化得到。
 
 ## 6.7 Q-Former 何时使用
 
@@ -739,10 +999,10 @@ z_{\mathrm{static}}=f_{\mathrm{point}}(\mathrm{stablePointFields})
 ```
 
 ```math
-z_{\mathrm{context}}=f_{\mathrm{ctx}}(a_o,a_d,g,d,t,w,b,\mathrm{traffic},\mathrm{capacity})
+z_{\mathrm{context}}=f_{\mathrm{ctx}}(\tau,a,g_\tau,t,w,b,h,\mathrm{traffic},\mathrm{capacity})
 ```
 
-SID 只由 `z_static` 或 action-conditioned static embedding 生成。模型条件和 reranker 使用 `z_context`。
+主方案的 H3 prefix 只由 action-point 标准代表坐标和固定 H3 版本确定；stable local leaf 由 `(action namespace, R13 cell, action_point_id)` 的版本化槽位表分配。$z_{\mathrm{static}}$ 用于检索、排序、leaf 辅助预测以及可选 local GAOQ 消融，不决定主方案的地理 prefix。模型条件和 reranker 使用 $z_{\mathrm{context}}$。订单后的司机轨迹可进入 $L_{\mathrm{behavior}}$ 的监督目标，但不能进入 $z_{\mathrm{context}}$。
 
 ## 6.9 Encoder loss
 
@@ -752,16 +1012,16 @@ L_{\mathrm{enc}}=\lambda_1L_{\mathrm{ctx2point}}+\lambda_2L_{\mathrm{behavior}}+
 
 其中：
 
-- `L_ctx2point`：context–point InfoNCE，多正例版本。
-- `L_behavior`：会合成功/失败 pairwise 或 calibrated BCE。
-- `L_fieldMask`：FAMAE。
-- `L_roadRelation`：道路侧向、方向和路线桶。
-- `L_graphLink`：步行/车行/语义图 link prediction。
-- `L_modalityConsistency`：随机丢弃视觉、行为或文本模态后的表征一致性。
+- $L_{\mathrm{ctx2point}}$：context–point InfoNCE，多正例版本。
+- $L_{\mathrm{behavior}}$：会合成功/失败 pairwise 或 calibrated BCE。
+- $L_{\mathrm{fieldMask}}$：FAMAE。
+- $L_{\mathrm{roadRelation}}$：道路侧向、方向和路线桶。
+- $L_{\mathrm{graphLink}}$：步行/车行/语义图 link prediction。
+- $L_{\mathrm{modalityConsistency}}$：随机丢弃视觉、行为或文本模态后的表征一致性。
 
 ---
 
-# 7. Point SID 与 Action-Conditioned Map-GAOQ
+# 7. Point SID：H3 地理层级前缀与 Action-Conditioned Local Leaf
 
 ## 7.1 SID 单元粒度
 
@@ -783,127 +1043,241 @@ u = (
 
 ```text
 <point_begin>
-<sid_v3>
 <PU> 或 <DO>
-<m1_037>
-<m2_181>
-<leaf_029>
+<sid_v4>
+<r5_0187>
+<child_5_9_0782>
+<child_9_13_1140>
+<leaf_003>
 <point_end>
 ```
 
-线上可将 begin/end 固定到解码器状态，不必都占生成 token；真正生成深度保持 3～4 token。
+其中：
 
-## 7.3 Action-conditioned GAOQ
+```text
+<r5_0187>：
+  当前服务点位库内的绝对R5 cell字典token
 
-步骤：
+<child_5_9_0782>：
+  目标R9 cell在该R5父cell全部R9后代中的确定性序号
 
-1. 用多路静态 Encoder 得到 `z_point`。
-2. 拼接 action type、道路侧向、楼层和静态法规 embedding。
-3. 训练 FAMAE/行为辅助任务，使 embedding 保留会合相关字段。
-4. 使用 GAOQ 学习全局对齐的量化方向。
-5. 逐层量化并在最后增加 leaf 消解 prefix 内冲突。
-6. 分别建立 `<PU>`、`<DO>` 合法 trie。
+<child_9_13_1140>：
+  目标R13 cell在该R9父cell全部R13后代中的确定性序号
 
-action-conditioned embedding：
-
-```math
-z_u=f_{\mathrm{action}}(z_{\mathrm{point}},e_{\mathrm{action}},e_{\mathrm{roadSide}},e_{\mathrm{level}})
+<leaf_003>：
+  当前action namespace × R13 cell内的稳定action-point槽位
 ```
 
-## 7.4 为什么动态信息不进入量化
+`<sid_v4>`、begin/end 和由请求确定的 `<PU>/<DO>` 可以强制写入或通过 mask 固定；模型实际预测 R5、两个 child position 和 local leaf 共 4 个 token，因此仍符合短解码目标。
 
-以下字段禁止进入稳定码本：
+## 7.3 H3 地理前缀构造
+
+### 7.3.1 必须从 R13 沿逻辑父链向上计算
+
+使用 action-point 库中的标准代表坐标：
+
+```text
+c13 = latLngToCell(canonical_lat, canonical_lon, 13)
+c9  = cellToParent(c13, 9)
+c5  = cellToParent(c13, 5)
+
+p5_9  = cellToChildPos(c9, parent_resolution=5)
+p9_13 = cellToChildPos(c13, parent_resolution=9)
+```
+
+解码时可逆：
+
+```text
+c9  = childPosToCell(p5_9,  c5, child_resolution=9)
+c13 = childPosToCell(p9_13, c9, child_resolution=13)
+```
+
+不要分别调用 `latLngToCell(point, 5/9/13)` 后拼接三个完整 H3 ID。H3 提供精确的逻辑层级关系，但跨分辨率只有近似的几何包含；SID 应遵循 `cellToParent` 的逻辑父链。[H3 层级 API](https://h3geo.org/docs/api/hierarchy/)、[H3 层级说明](https://h3geo.org/docs/)
+
+主 SID 可形式化为：
+
+```math
+\mathrm{SID}(u)=\left(\tau,c_5,p_{5\to9},p_{9\to13},\ell_{\tau,c_{13}}(u)\right)
+```
+
+### 7.3.2 子网格序号是确定性相对编码
+
+`cellToChildPos` 返回 child 在父 cell 有序后代集合中的位置，顺序与 H3 `cellToChildren` 一致。不同父 cell 使用同一套计算逻辑，不是随机分配：
+
+```text
+R5 → R9：普通hex父cell跨4级，最多7^4=2401个逻辑后代位置
+R9 → R13：普通hex父cell跨4级，最多7^4=2401个逻辑后代位置
+```
+
+因此建议使用两套可复用 token：
+
+```text
+<child_5_9_0000>  ... <child_5_9_2400>
+<child_9_13_0000> ... <child_9_13_2400>
+```
+
+但相同 position 在不同父 cell 下只表示相同的逻辑枚举位置，不保证相同绝对罗盘方向。Class II/Class III 旋转和五边形缺失方向会影响几何解释；五边形后代数量也少于 2401。工程实现必须调用 H3 API、固定 H3 库版本并保存版本号，不能自行随机编号或假定所有父 cell 都是普通六边形。
+
+### 7.3.3 分辨率含义
+
+| 层级 | 平均面积 | 平均边长 | SID作用 |
+|---|---:|---:|---|
+| R5 | 约252.9 km² | 约9.85 km | 城市片区/大区域路由 |
+| R9 | 约0.105 km² | 约200.8 m | 街区、AOI或枢纽局部区域 |
+| R13 | 约43.9 m² | 约4.09 m | action-point附近的细粒度地理桶 |
+
+数值是全球平均值，具体 cell 面积会随位置变化。[H3 分辨率统计](https://h3geo.org/docs/core-library/restable/)
+
+R5 token 不建议覆盖全球全部约 202 万个 cell；只把服务点位库中活跃的 R5 cell 映射为紧凑原子 token，并在 lookup 中保存真实 H3 index。原始十六进制 H3 字符串也不应直接交给通用 BPE 拆分。
+
+`real_r5_h3_index ↔ <r5_xxxx>` 映射本身也必须版本化且稳定：普通增删不能按“当前 active R5 排序”重新编号；新增 R5 使用预留或追加 token，删除 R5 保留 tombstone，active 状态只通过 mask 控制。否则即使 H3 父子关系未变，所有下游样本和模型 token 仍会发生无意义 churn。
+
+## 7.4 Stable Local Leaf 与可选 Local GAOQ
+
+### 7.4.1 主方案：稳定槽位
+
+在每个 `(action namespace, R13 cell)` 桶内分配稳定 leaf：
+
+```text
+(PU, c13_x):
+  leaf_000 = 地面东侧上车点
+  leaf_001 = 地下B1网约车区
+  leaf_002 = 地面西侧临停点
+
+(DO, c13_x):
+  leaf_000 = 地面落客点
+  leaf_001 = 急诊入口落客点
+```
+
+分配规则：
+
+1. leaf 与 `action_point_id` 建立版本化稳定映射。
+2. 删除点保留 tombstone，不立即复用 leaf。
+3. 预留 reserved leaf 支持新点和临时点。
+4. PU/DO 分桶独立，同一 physical point 可以有不同 leaf。
+5. leaf lookup 恢复 road side、level、vehicle access、legality 和 physical point。
+6. 桶容量根据真实 `points-per-(action,R13)` 的 P95/P99/max 决定，超限进入 overflow 或扩展 leaf 版本。
+
+### 7.4.2 可选方案：local semantic suffix
+
+只有当同一 R13 cell 内 action-point 冲突较多、稳定 leaf 的长尾学习不足时，才实验：
+
+```text
+<PU><R5><CHILD_5_9><CHILD_9_13><LOCAL_GAOQ><LEAF>
+```
+
+Local GAOQ 只在同一 R13 或邻近局部桶内对 $z_{\mathrm{point}}$ 做语义/行为分组，不负责全局地理层级。FAMAE、GraphEncoder 和 BehaviorEncoder 在这里用于改善 local semantic suffix 或 leaf 预测。它是消融方案，不是第一版依赖。
+
+## 7.5 为什么动态信息不进入 SID
+
+以下字段既不能改变 H3 prefix，也不能改变 stable local leaf：
 
 ```text
 实时交通速度
 施工临时状态
 天气
 路缘实时占用
-司机位置和ETA
+已分配司机位置和ETA
 当前供需
 ```
 
-否则相同点位会随分钟变化 SID，造成模型、索引和日志标签失配。
+H3 prefix 只使用点位库标准坐标；leaf 只使用稳定 action-point 身份。动态事实进入请求 context、合法性快照和 reranker。否则相同点位会随分钟变化 SID，造成模型、索引和日志标签失配。
 
-## 7.5 SID 对照实验
+## 7.6 SID 对照实验
 
 | 方案 | 优点 | 风险 |
 |---|---|---|
 | 随机 ID | 最简单 | 无前缀语义、长尾学习差 |
-| H3/GeoHash 层级 | 空间解释直观 | 道路对面、楼层和操作合法性表达弱 |
+| 完整 H3 ID：R5+R9+R13+leaf | 实现直观 | 绝对 R9/R13 词表大，父级信息冗余 |
+| **相对 H3 prefix + stable leaf** | 确定、可逆、词表小、新点易路由 | R13边界敏感，leaf需稳定槽位管理 |
+| H3 5→7→9→11→13 + leaf | 单步约49个后代、学习平滑 | 多生成2个token |
+| H3 prefix + road/level token + leaf | 属性可解释 | 序列更长、属性更新导致SID变化 |
+| H3 prefix + local GAOQ + leaf | 局部语义/行为更强 | 训练和版本管理更复杂 |
 | Road-first 层级 | 方向和道路关系强 | 语义、行为和跨道路替代点弱 |
 | RQ-KMeans | 标准语义量化 | 各层漂移、利用率不均 |
 | RQ-OPQ | 减少量化误差 | 不直接保证业务可预测性 |
-| GAOQ | 全局对齐的层级方向 | 需验证 prefix 与点位效用是否一致 |
-| FAMAE+GAOQ | 强化字段/行为可预测性 | 训练更复杂 |
-| 双 namespace GAOQ | pickup/dropoff 合法性清晰 | 码本和索引翻倍 |
-| 共享码本+action token | 跨任务共享充分 | 同一 prefix 可能混合冲突行为 |
+| 全局 dual-namespace GAOQ | 语义与行为可学习 | 码本训练、churn和新点路由复杂 |
 
 推荐主对照：
 
 ```text
-H3+road-side
+random action-point ID
+absolute H3 R5/R9/R13 + leaf
+relative H3 R5/child5→9/child9→13 + stable leaf（主方案）
+fine H3 R5/7/9/11/13 + stable leaf
+relative H3 prefix + local GAOQ + leaf
 RQ-OPQ
-shared GAOQ
-dual-namespace GAOQ
-FAMAE + dual-namespace GAOQ
+global dual-namespace GAOQ
 ```
 
-## 7.6 SID 指标
+## 7.7 SID 指标
 
 ```text
-code utilization
-prefix entropy
-leaf collision P50/P95/P99
-quantization error
-prefix action purity
-prefix road-side consistency
-prefix walk/drive relation consistency
-behavior predictiveness
-new-point routing accuracy
-SID churn
+R5 token覆盖率、频率和熵
+child5→9 / child9→13 token利用率和条件熵
+child position可逆重建成功率
+非法parent-child路径率
+points-per-(action,R13) P50/P95/P99/max
+leaf容量、overflow和tombstone比例
+同R13道路侧向/楼层冲突率
+R13边界附近Recall@K
+标准坐标修订后的SID churn
+新点prefix路由和leaf分配成功率
+SID词表、embedding/LM-head显存
+固定trie下的beam P50/P99延迟
 下游 HR/MRR/NDCG
 ```
 
-## 7.7 新增、关闭和临时点位
+local GAOQ 和全局量化方案另报告 quantization error、code utilization、prefix purity 和码本 churn，不能与确定性 H3 指标混为一谈。
+
+其中 H3/lookup 正确性是发布硬门槛，不是可容忍退化的模型指标：对每个 active action-point 执行 `point → SID tokens → c13/local leaf → action_point_id`，有效 catalog 记录的往返一致率必须为 100%；五边形父 cell、R5 新增、leaf tombstone、跨 R13 迁移和版本回放必须纳入测试集。
+
+## 7.8 新增、关闭和临时点位
 
 离线稳定点：
 
 ```text
-新码本版本
-old→new SID 映射
-双码本过渡
-模型蒸馏迁移
+新增点：
+  标准坐标→R13→逻辑R9/R5父链→两个child position
+  在(action,R13)桶中分配reserved leaf
+  更新lookup和合法trie，无需重训全局量化码本
+
+仅名称/说明/法规元数据更新：
+  尽量保持SID不变，更新lookup和动态/静态属性
+
+标准坐标跨R13、action type或楼层身份变化：
+  关闭old SID并分配new SID
+  保存old→new映射、catalog version和生效时间
 ```
 
 近线临时点：
 
 ```text
-delta 点位索引
-运营 reserved slots 实验
+优先使用预留local leaf和delta合法trie
+无法安全分配时走规则/ANN运营分支
 规则/ANN 召回分支
 过期时间TTL
 人工审核
 ```
 
-关闭点位首先从合法 trie 和 lookup 中移除，不能只依赖 RL 记忆。
+固定 `sid_version + h3_library_version + R5 token dictionary + leaf table version`。关闭点位首先从合法 trie 和 lookup 中移除，不能只依赖 RL 记忆。编码规范变化才升级 SID version；普通点位增删只升级 catalog/leaf table version。
 
-## 7.8 是否联合生成上下车点 pair
+## 7.9 两类请求严格独立
 
-第一版分别生成：
-
-```text
-pickup = model(context, <PU>)
-dropoff = model(context, <DO>)
-```
-
-二期可实验联合 pair：
+当前产品调用固定为：
 
 ```text
-<PU><pickup_sid><PAIR_SEP><DO><dropoff_sid>
+pickup_sid = model(<TASK_PU>, selected_origin, pickup_local_context)
+dropoff_sid = model(<TASK_DO>, selected_destination, dropoff_local_context)
 ```
 
-联合生成可学习首尾段总成本，但组合空间更大、解码更长、点位动态状态更难同步。必须与“独立生成+pair rerank”比较。
+明确禁止把它改写为：
+
+```text
+model(origin, destination) → <PU><pickup_sid><PAIR_SEP><DO><dropoff_sid>
+```
+
+原因不是只为缩短解码，而是产品语义本身是两次独立决策：触发时刻、已选 anchor、可用局部信号、候选 namespace 和解释理由均不同。离线可按同一 session 关联两条记录做数据质检，但不可把另一端点拼回当前请求，也不设置 pair loss 或 pair rerank。
 
 ---
 
@@ -913,8 +1287,8 @@ dropoff = model(context, <DO>)
 
 ### CPT-0：SID token warm-up
 
-- 冻结 backbone，只训练新增 SID embedding 和 LM head。
-- 使用 prefix caption、point↔SID、SID→caption。
+- 冻结 backbone，只训练新增的 active R5、两套 child position、local leaf embedding 和 LM head。
+- 使用 H3 parent-child 重建、prefix caption、point↔SID、SID→caption。
 - 监控新增 token norm、频率和不同位置梯度。
 
 ### CPT-1：点位与地图知识对齐
@@ -924,18 +1298,18 @@ dropoff = model(context, <DO>)
 
 ### CPT-2：行为 co-pretraining
 
-- 加入 anchor/OD–point 共现、session、轨迹、会合结果和反事实。
+- 加入 action-aware anchor–point 共现、独立请求 session、轨迹、会合结果和反事实。
 - 混入通用中文、地图、道路和交通知识以抑制遗忘。
 
 ## 8.2 CPT 数据比例和训练量
 
 | 类型 | 比例 |
 |---|---:|
-| SID token/prefix/点位双向对齐 | 18% |
+| H3 prefix/local leaf/点位双向对齐 | 18% |
 | 点位结构、道路和图关系 | 20% |
-| anchor/OD–point 协同共现 | 18% |
+| action-aware anchor–point 协同共现 | 18% |
 | session、改点和短序列 | 10% |
-| 乘客/司机轨迹与会合结果 | 12% |
+| 订单后乘客/司机轨迹与会合结果（仅监督目标） | 12% |
 | 反事实、困难失败和仿真 | 8% |
 | 生命周期、法规、版本和新增点 | 7% |
 | 通用地图、交通和语言保持 | 7% |
@@ -952,21 +1326,22 @@ POC：0.5～2B tokens
 
 ## 8.3 CPT 样本全集
 
-### CPT-01：SID prefix → cluster caption
+### CPT-01：H3 prefix → 地理桶说明
 
 ```text
 <task=point_prefix_caption>
 Input:
   namespace=<PU>
-  prefix=<m1_037><m2_181>
+  prefix=<r5_0187><child_5_9_0782><child_9_13_1140>
   statistics:
     point_types=[designated_zone, station_pickup]
     top_aois=[虹桥综合交通枢纽]
-    levels=[B1,B2]
-    road_relation=[indoor_vehicle_lane]
+    levels=[ground,B1,B2]
+    action_point_count=9
 Output:
-  该前缀主要覆盖虹桥枢纽地下网约车上客区，
-  但不能仅凭prefix确定具体交通中心、楼层或柱号。
+  该前缀对应虹桥西交通中心附近的R13地理桶，
+  其中包含多个楼层和上客点；不能仅凭H3 prefix
+  确定道路侧向、楼层、柱号或具体action-point。
 ```
 
 ### CPT-02：action-point record → SID
@@ -981,8 +1356,9 @@ Input:
   heading=170-250
   level=B1
   pickup_legal=1
+  canonical_coordinate=(31.196,121.315)
 Output:
-  <sid_v3><PU><m1_037><m2_181><leaf_029>
+  <PU><sid_v4><r5_0187><child_5_9_0782><child_9_13_1140><leaf_003>
 ```
 
 ### CPT-03：SID → dense caption
@@ -990,7 +1366,7 @@ Output:
 ```text
 <task=sid_to_point_caption>
 Input:
-  <sid_v3><PU><m1_037><m2_181><leaf_029>
+  <PU><sid_v4><r5_0187><child_5_9_0782><child_9_13_1140><leaf_003>
 Output:
   虹桥火车站西交通中心B1网约车上客区6号柱，
   服务西出站方向，车辆从申虹路驶入，仅用于上客。
@@ -1061,14 +1437,15 @@ Output:
 ```text
 <task=vehicle_relation>
 Input:
-  driver_road=延安高架出口
-  driver_heading=west
-  candidate_A=道路同向右侧
-  candidate_B=反向左侧
+  point_A=辅路右侧合法停靠点
+  point_B=主路左侧停靠点
+  local_road_graph=[单行方向,转向限制,隔离带,合法入口]
 Output:
-  A=direct_access
-  B=requires_U_turn
+  A=generic_vehicle_access_easy
+  B=requires_long_loop_or_U_turn_for_most_approaches
 ```
+
+这是点位本体及局部路网的通用可达性学习，不输入某个已分配司机的位置或朝向。
 
 ### CPT-09：点位—AOI—入口关系
 
@@ -1112,18 +1489,19 @@ Output:
 
 按完成会合和履约加权，不能只复刻默认曝光。
 
-### CPT-12：OD → 点位协同共现
+### CPT-12：action-aware anchor → 点位协同共现
 
 ```text
-<task=od_point_cooccur>
+<task=action_anchor_point_cooccur>
 Input:
-  origin=国贸商城
-  destination=首都机场
-  action=pickup
-  trip_heading=northeast
+  action=dropoff
+  anchor=国贸商城
+  subarea=北门办公楼
 Output:
-  <国贸商城东北侧同向上客点SID>
+  <国贸商城北门落客点SID>
 ```
+
+同一 anchor 的 PU/DO 共现统计分别估计，不把一次订单的另一个端点作为条件。
 
 ### CPT-13：用户历史习惯点
 
@@ -1150,10 +1528,10 @@ Input:
   shown=<商场东门上客点>
   user_action=manual_drag
   dragged_to=<商场北门辅路>
-  reason_signal=driver_approach_from_north
+  reason_signal=user_near_north_exit_and_avoids_crossing
 Output:
   final_point=<商场北门辅路上客点SID>
-  revision=avoid_crossing_and_detour
+  revision=avoid_crossing
 ```
 
 ### CPT-15：乘客轨迹 → 实际会合点
@@ -1179,6 +1557,8 @@ Output:
   actual_point=<西交通中心B1上客区6号柱SID>
   map_match_confidence=high
 ```
+
+本样本在订单结束后构造。司机轨迹是 $y_{\mathrm{post}}$ 的标签来源，用于确认实际点位；训练时应使用专门的 outcome/label 模板，不能与线上 prompt 拼接，也不能让 CPT 预测目标时看到未来轨迹。
 
 ### CPT-17：会合结果序列
 
@@ -1217,13 +1597,12 @@ Output:
 <task=point_counterfactual>
 Input:
   anchor=道路东侧酒店
-  destination_direction=east
 Candidates:
-  A=东侧辅路,walk=120m,driver_detour=60m
-  B=西侧主路,walk=40m,driver_detour=1600m,requires_U_turn=1
+  A=东侧辅路,walk=120m,vehicle_access_complexity=low
+  B=西侧主路,walk=40m,requires_crossing=1,vehicle_access_complexity=high
 Output:
   preferred=A
-  reason=B直线更近但司机绕行和乘客过街成本更高。
+  reason=B直线更近，但乘客需要过街且点位通用车辆可达性更差。
 ```
 
 ### CPT-20：动态状态条件化
@@ -1244,13 +1623,13 @@ Output:
 ```text
 <task=point_lifecycle_and_version>
 Input:
-  old_sid=<sid_v3><PU><m1_11><m2_92><leaf_07>
-  change=道路施工导致上客点永久迁移120m
+  old_sid=<PU><sid_v4><r5_0187><child_5_9_0782><child_9_13_1140><leaf_007>
+  change=道路施工导致标准点永久迁移120m并跨R13 cell
   new_point=<临时北门上客点>
-  new_version=v4
+  new_catalog_version=18
 Output:
   old_status=closed
-  new_sid=<sid_v4><PU><m1_11><m2_95><leaf_02>
+  new_sid=<PU><sid_v4><r5_0187><child_5_9_0782><child_9_13_1168><leaf_002>
   relation=replacement_for
 ```
 
@@ -1267,7 +1646,8 @@ Input:
   visual=[NA]
   serves_POI=机场T3
 Output:
-  nearest_prefix=<PU><m1_208><m2_031>
+  geo_prefix=<PU><r5_0241><child_5_9_0198><child_9_13_2074>
+  allocated_leaf=<leaf_000>
   cold_start=1
 ```
 
@@ -1293,7 +1673,7 @@ L_{\mathrm{CPT}}=-\sum_t w_{\mathrm{type}(x_t)}\log P_\theta(x_t\mid x_{1:t-1})+
 
 - SID、关系答案和目标点位 token 权重高于输入上下文。
 - 原始曝光列表不作为目标或显著降权。
-- `L_retain` 使用通用文本 CE 或对原始基座做 KL anchor。
+- $L_{\mathrm{retain}}$ 使用通用文本 CE 或对原始基座做 KL anchor。
 - encoder 的图、字段和对比 loss 保留在 Encoder 阶段。
 - 动态状态样本要做 timestamp masking，防止未来信息泄漏。
 
@@ -1305,10 +1685,10 @@ L_{\mathrm{CPT}}=-\sum_t w_{\mathrm{type}(x_t)}\log P_\theta(x_t\mid x_{1:t-1})+
 
 ```text
 SFT-0：SID/点位/道路 grounding
-SFT-1：无司机的 pickup/dropoff 基础推荐
-SFT-2：完整OD、道路侧向和复杂AOI
-SFT-3：派单后动态推荐、session和个性化
-SFT-4：多正例、Top-K和联合pair
+SFT-1：单 anchor 的 pickup/dropoff 基础推荐
+SFT-2：道路侧向、复杂AOI和显式约束
+SFT-3：发单前动态状态、session和个性化
+SFT-4：多正例、Top-K和任务隔离
 SFT-5：教师侧复杂推理→学生无CoT蒸馏
 SFT-6：关闭、无安全点、新点和鲁棒性
 ```
@@ -1318,12 +1698,12 @@ SFT-6：关闭、无安全点、新点和鲁棒性
 | 类型 | 比例 |
 |---|---:|
 | SID/点位 grounding | 10% |
-| pre-dispatch pickup | 22% |
-| pre-dispatch dropoff | 15% |
-| post-dispatch/in-trip 动态推荐 | 15% |
-| 完整OD、复杂枢纽和显式约束 | 13% |
-| 多正例、Top-K、联合pair | 10% |
-| session、习惯点和改点 | 5% |
+| 独立 pickup 请求 | 24% |
+| 独立 dropoff 请求 | 20% |
+| 发单前动态状态与复杂枢纽 | 12% |
+| 显式约束、session和个性化 | 10% |
+| 多正例、Top-K和任务隔离 | 8% |
+| 履约 outcome 弱监督与归因 | 6% |
 | 教师蒸馏 | 6% |
 | 无安全点、生命周期和新点 | 3% |
 | 通用能力保持 | 1% |
@@ -1337,32 +1717,29 @@ POC：5～10M 高质量样本
 教师复杂样本：1～3M context模板去重样本
 ```
 
-应按 `request×time_bucket×stage` 去重，避免头部交通枢纽淹没普通场景。
+应按 `request_type×selected_anchor×time_bucket×context_signature` 去重，避免头部交通枢纽淹没普通场景。配比合计为 100%，PU/DO 的 24%/20% 只是起始值，最终按请求量与长尾覆盖重采样。
 
 ## 9.3 SFT 样本全集
 
 ### SFT-01：普通街道上车
 
 ```text
-<task=pickup>
-<stage=PRE_DISPATCH>
-origin_anchor=建国路SOHO
-origin_gps_acc=15m
-destination=首都机场
+<task=pickup_point_recommend>
+selected_anchor=建国路SOHO
+user_gps_acc=15m
 time=10:20
 walk_budget=200m
 Output:
-  <sid_v3><PU><m1_021><m2_104><leaf_008>
+  <PU><sid_v4><r5_0062><child_5_9_1044><child_9_13_0318><leaf_001>
 ```
 
-目标点位为同侧合法辅路，减少司机掉头。
+目标点位为乘客同侧合法辅路，且具有较好的通用车辆可达性；不依赖终点方向。
 
 ### SFT-02：POI 入口上车
 
 ```text
-origin_anchor=北京协和医院东单院区
+selected_anchor=北京协和医院东单院区
 user_location=门诊楼南侧
-destination=北京南站
 action=pickup
 Output:
   <门诊楼南门上客点SID>
@@ -1373,24 +1750,23 @@ Output:
 ### SFT-03：小区不同门上车
 
 ```text
-origin_anchor=阳光花园
+selected_anchor=阳光花园
 user_location=小区8号楼
-destination_direction=north
 candidate_access:
-  north_gate=walk180m,driver_direct
-  south_gate=walk90m,driver_detour900m
+  north_gate=walk180m,generic_vehicle_access=easy
+  south_gate=walk90m,requires_crossing=1,generic_vehicle_access=hard
 Output:
   <小区北门上客点SID>
 ```
 
-### SFT-04：道路侧向与避免掉头
+### SFT-04：道路侧向与通用车辆可达
 
 ```text
-origin_anchor=国贸商城
-destination=首都机场
-trip_heading=northeast
-candidate_A=东北侧辅路
-candidate_B=西南侧主路
+selected_anchor=国贸商城
+user_location=商城东北门
+local_road_facts=[东北侧辅路可合法停靠,西南侧主路有隔离带且车辆驶入复杂]
+candidate_A=东北侧辅路,requires_crossing=0
+candidate_B=西南侧主路,requires_crossing=1
 Output:
   <东北侧辅路上客点SID>
 ```
@@ -1398,7 +1774,7 @@ Output:
 ### SFT-05：机场/火车站指定上客区
 
 ```text
-origin_anchor=虹桥火车站
+selected_anchor=虹桥火车站
 user_location=西出站口
 action=pickup
 constraints=网约车
@@ -1409,8 +1785,7 @@ Output:
 ### SFT-06：普通下车
 
 ```text
-destination_anchor=国贸商城
-origin=首都机场
+selected_anchor=国贸商城
 action=dropoff
 target_entrance=办公楼
 Output:
@@ -1420,7 +1795,7 @@ Output:
 ### SFT-07：特定入口/楼层下车
 
 ```text
-destination_anchor=上海儿童医学中心
+selected_anchor=上海儿童医学中心
 destination_subtarget=急诊
 action=dropoff
 time=23:20
@@ -1431,61 +1806,63 @@ Output:
 ### SFT-08：单行路/窄路下车
 
 ```text
-destination_anchor=老城区酒店
+selected_anchor=老城区酒店
 road=单行窄路
-candidate_A=酒店正门,vehicle_detour=1200m
+candidate_A=酒店正门,vehicle_access_complexity=high
 candidate_B=后街步行入口,walk=80m,legal_dropoff=1
 Output:
   <后街落客点SID>
 ```
 
-### SFT-09：只选择起点，终点未知
+### SFT-09：标准独立起点请求
 
 ```text
-<stage=PRE_DISPATCH>
-origin_anchor=上海虹桥火车站
-destination=<MISSING>
+<task=pickup_point_recommend>
+selected_anchor=上海虹桥火车站
 user_location=西出站口
 Output:
   <稳定高成功率西交通中心上客点SID>
 ```
 
-目标不得假设行驶方向。
+这就是正常主样本，不需要增加 `destination=<MISSING>`；字段缺失与“该字段不属于协议”必须区分。目标不得假设行驶方向。
 
-### SFT-10：只选择终点，起点未知
+### SFT-10：标准独立终点请求
 
 ```text
-destination_anchor=国家大剧院
-origin=<MISSING>
+<task=dropoff_point_recommend>
+selected_anchor=国家大剧院
 action=dropoff
 target_entrance=北门
 Output:
   <国家大剧院北门落客点SID>
 ```
 
-### SFT-11：完整 OD 条件
+### SFT-11：同一 anchor 的 PU/DO 任务差异
 
 ```text
-origin=商场A
-destination=机场T2
-action=pickup
-od_heading=east
-traffic=normal
-Output:
-  <商场东侧同向上客点SID>
+Record A:
+  task=pickup_point_recommend
+  selected_anchor=商场A
+  output=<商场地下网约车上客区SID>
+
+Record B:
+  task=dropoff_point_recommend
+  selected_anchor=商场A
+  output=<商场地面北门落客点SID>
 ```
 
-### SFT-12：派单后结合司机接近方向
+两条记录独立进入 batch；它们可共享同一 physical anchor，但不能合并为一个 OD 或 pair 样本。
+
+### SFT-12：发单前临时道路状态
 
 ```text
-<stage=POST_DISPATCH>
-origin_anchor=国贸商城
-driver_road=建国门外大街北侧
-driver_heading=east
-driver_eta=6min
+task=pickup_point_recommend
+selected_anchor=国贸商城
+temporary_closure=北侧上客点关闭
+curb_occupancy={east:0.35,west:0.92}
 user_walk_budget=180m
 Output:
-  <国贸北侧东向上客点SID>
+  <国贸东侧合法上客点SID>
 ```
 
 ### SFT-13：手动拖点后的 session
@@ -1494,7 +1871,7 @@ Output:
 history:
   shown=<东门上客点>
   user_dragged_to=<北门>
-current_request=same_order
+current_request=same_preorder_session
 Output:
   <北门合法上客点SID>
 ```
@@ -1504,7 +1881,7 @@ Output:
 ### SFT-14：显式无障碍约束
 
 ```text
-origin_anchor=医院门诊楼
+selected_anchor=医院门诊楼
 action=pickup
 explicit_constraint=wheelchair_accessible
 candidate_A=台阶近门
@@ -1518,7 +1895,7 @@ Output:
 ### SFT-15：大件行李/携幼
 
 ```text
-origin_anchor=机场到达层
+selected_anchor=机场到达层
 explicit_constraint=large_luggage
 candidate_A=步行楼梯
 candidate_B=电梯直达网约车区
@@ -1529,7 +1906,7 @@ Output:
 ### SFT-16：暴雨和夜间
 
 ```text
-origin_anchor=商场
+selected_anchor=商场
 weather=heavy_rain
 time=22:40
 candidate_A=露天近点
@@ -1541,7 +1918,7 @@ Output:
 ### SFT-17：大型活动和拥挤
 
 ```text
-origin_anchor=体育场
+selected_anchor=体育场
 event=散场
 east_gate_capacity=full
 south_gate_capacity=available
@@ -1553,7 +1930,7 @@ Output:
 ### SFT-18：用户习惯点
 
 ```text
-origin_anchor=家庭住址小区
+selected_anchor=家庭住址小区
 history=<北门连续10次高质量完成>
 current_status=北门正常开放
 Output:
@@ -1595,17 +1972,22 @@ Output list:
 
 列表任务只作辅助；线上主链仍是一条 beam 一个 SID。
 
-### SFT-21：联合 pickup/dropoff pair
+### SFT-21：请求边界与 task isolation
 
 ```text
-Input:
-  origin=老城区单行路酒店
-  destination=机场T2
-Output:
-  <PU><酒店后街上客点SID><PAIR_SEP><DO><T2出发层落客点SID>
+Valid record 1:
+  input=<TASK_PU>,selected_anchor=老城区单行路酒店
+  output=<PU><酒店后街上客点SID>
+
+Valid record 2:
+  input=<TASK_DO>,selected_anchor=机场T2
+  output=<DO><T2到达层落客点SID>
+
+Invalid training target:
+  <PU><酒店后街上客点SID><PAIR_SEP><DO><T2落客点SID>
 ```
 
-与独立生成+pair rerank 做消融。
+通过 response mask 和 namespace mask 保证每条记录只产生当前 task 的一个 SID；不训练联合 pair。
 
 ### SFT-22：无安全合法点/保留原点
 
@@ -1654,7 +2036,7 @@ Output:
 raw context
 + candidate road facts
 + pedestrian routes
-+ driver approach
++ static/historical vehicle-access facts
 + dynamic traffic/capacity
 + visual landmark descriptions
 ```
@@ -1670,7 +2052,7 @@ raw context
   ],
   "soft_tradeoff": {
     "rider_walk": "medium",
-    "driver_detour": "low",
+    "generic_vehicle_access": "easy",
     "shelter": "preferred"
   },
   "target_sid": "<accessible_sheltered_point>"
@@ -1701,11 +2083,11 @@ L_{\mathrm{SFT}}=L_{\mathrm{CE}}+\lambda_mL_{\mathrm{MML}}+\lambda_dL_{\mathrm{K
 
 说明：
 
-- `L_CE`：response-only SID CE。
-- `L_MML`：多正确点位。
-- `L_KD`：内化复杂道路和动态推理。
-- `L_RDrop`：相同输入不同 dropout 的分布一致性。
-- `L_UL`：只用于非法、关闭、错误 action、错楼层等高置信负例。
+- $L_{\mathrm{CE}}$：response-only SID CE。
+- $L_{\mathrm{MML}}$：多正确点位。
+- $L_{\mathrm{KD}}$：内化复杂道路和动态推理。
+- $L_{\mathrm{RDrop}}$：相同输入不同 dropout 的分布一致性。
+- $L_{\mathrm{UL}}$：只用于非法、关闭、错误 action、错楼层等高置信负例。
 
 位置加权：
 
@@ -1713,7 +2095,17 @@ L_{\mathrm{SFT}}=L_{\mathrm{CE}}+\lambda_mL_{\mathrm{MML}}+\lambda_dL_{\mathrm{K
 L_{\mathrm{SID}}=-\sum_{l=1}^{L}\alpha_l\log P(s_l\mid c,s_{1:l-1})
 ```
 
-先使用等权，再根据 prefix action purity 和条件熵做消融。
+主方案的位置依次为：
+
+```text
+action namespace（通常由task强制）
+active R5 cell
+child5→9 position
+child9→13 position
+stable local leaf
+```
+
+先对四个实际预测位置使用等权，再消融“地理 prefix 较低权重、leaf 较高权重”和基于条件熵的权重。训练和评估都要验证 parent-child 可逆性；非法 child position 除 CE 外还应被 trie mask。
 
 ---
 
@@ -1803,7 +2195,7 @@ Chosen:
 Rejected:
   <西侧主路上客点>
 Reason:
-  rejected需要过街且司机反向。
+  rejected需要乘客过街，且该点局部车辆驶入复杂度更高。
 ```
 
 ### RL-04：禁停/非法 action
@@ -1829,43 +2221,52 @@ Rejected=<热门点B>,walk=360m
 
 不能让历史热度覆盖显式步行硬约束。
 
-### RL-06：司机绕行与乘客步行权衡
+### RL-06：通用车辆可达与乘客步行权衡
 
 ```text
 Candidate A:
-  rider_walk=60m,driver_detour=1400m,U_turn=1
+  rider_walk=60m,generic_vehicle_access_cost=p95_high,U_turn_risk=1
 Candidate B:
-  rider_walk=150m,driver_detour=100m,U_turn=0
+  rider_walk=150m,generic_vehicle_access_cost=p50_low,U_turn_risk=0
 Context:
   user_walk_budget=200m
 Chosen=B
 Rejected=A
 ```
 
-### RL-07：司乘 ETA 同步
+这里的车辆成本来自点位局部路网仿真或历史多方向分布，不来自本次请求尚不存在的已分配司机。
+
+### RL-07：历史会合稳定性
+
+以下指标在订单完成后按相同 `request_type×anchor×scene` 聚合，只用于构造偏好标签：
 
 ```text
 Candidate A:
-  rider_arrival=2min,driver_arrival=8min,rider_wait=6min
+  rider_walk=2min,conditional_meeting_success=0.71,wrong_point_rate=0.09
 Candidate B:
-  rider_arrival=5min,driver_arrival=6min,rider_wait=1min
+  rider_walk=5min,conditional_meeting_success=0.92,wrong_point_rate=0.01
 Chosen=B
 Rejected=A
 ```
 
-### RL-08：派单后司机接近方向
+需要最小样本量、置信区间、曝光校正和场景条件化，不能把一次订单的等待差异直接变成 pair。
+
+### RL-08：PU/DO 请求隔离
 
 ```text
-driver_heading=east
-driver_route=道路北侧
-Chosen=<北侧东向上客点>
-Rejected=<南侧西向上客点>
+Context:
+  task=pickup_point_recommend
+  selected_anchor=商场北门
+Chosen=<PU><北门合法上客点SID>
+Rejected=<DO><同物理位置落客点SID>
 ```
+
+Rejected 即使物理位置相同，也因 action namespace 错误而失败。
 
 ### RL-09：下车入口正确性
 
 ```text
-destination=医院急诊
+selected_anchor=医院急诊
 Chosen=<急诊入口落客点>
 Rejected=<门诊楼正门落客点>
 ```
@@ -1873,7 +2274,7 @@ Rejected=<门诊楼正门落客点>
 ### RL-10：下车后尾段步行
 
 ```text
-destination=大型园区5号楼
+selected_anchor=大型园区5号楼
 Candidate A=园区主门,post_walk=900m
 Candidate B=5号楼东门,post_walk=110m,legal=1
 Chosen=B
@@ -1959,9 +2360,9 @@ A/B/C 都可接受。使用多正例或 set reward，不因一次点击强制排
 
 ```text
 Prompt:
-  anchor=虹桥火车站
-  action=pickup
-  stage=POST_DISPATCH
+  task=pickup_point_recommend
+  selected_anchor=虹桥火车站
+  user_location=西出站口
 
 Rollouts:
   1=<西B1网约车区>
@@ -1978,15 +2379,16 @@ Rollouts:
 
 ```text
 Valid:
-  A=<PU><m1_37><m2_181><leaf_29>
-  B=<PU><m1_37><m2_181><leaf_31>
+  A=<PU><sid_v4><r5_0187><child_5_9_0782><child_9_13_1140><leaf_003>
+  B=<PU><sid_v4><r5_0187><child_5_9_0782><child_9_13_1140><leaf_004>
 
-Rollout X=<PU><m1_37><m2_181><leaf_88>
-Rollout Y=<PU><m1_37><m2_90><leaf_12>
-Rollout Z=<DO><m1_37><m2_181><leaf_29>
+Rollout X=<PU><sid_v4><r5_0187><child_5_9_0782><child_9_13_1140><leaf_031>
+Rollout Y=<PU><sid_v4><r5_0187><child_5_9_0782><child_9_13_1198><leaf_002>
+Rollout W=<PU><sid_v4><r5_0187><child_5_9_0910><child_9_13_0102><leaf_001>
+Rollout Z=<DO><sid_v4><r5_0187><child_5_9_0782><child_9_13_1140><leaf_003>
 ```
 
-X 前两级正确但 leaf 错；Y 中层偏离；Z action namespace 已错误。信用应逐级区分。
+X 的完整 H3 prefix 正确但 leaf 非法；Y 的 R5/R9 正确、R13细网格偏离；W 在 R9 层已经偏离；Z action namespace 错误。信用应按确定性地理层级和最终 action-point 逐级区分。
 
 ### RL-20：实际会合偏差
 
@@ -2068,20 +2470,21 @@ pickup/dropoff非法
 
 硬门控失败应直接过滤或给强负，不与 CTR、热度或履约价值加权平均。
 
-### 10.4.2 六类软 reward
+### 10.4.2 五类软 reward
 
-1. `R_user`：步行时间、步行复杂度、雨棚、照明、无障碍、下车后尾段。
-2. `R_driver`：接近绕行、掉头、驶入/驶出、停车难度。
-3. `R_meet`：ETA 同步、实际会合偏差、等待、电话/聊天、找车。
-4. `R_trip`：首尾段总行程时间、费用、路线稳定性。
-5. `R_system`：路缘占用、拥堵、排放、容量和公平。
-6. `R_business`：接受、发单、完成和投诉。
+1. $R_{\mathrm{user}}$：步行时间、步行复杂度、雨棚、照明、无障碍、下车后尾段。
+2. $R_{\mathrm{vehicle}}$：由局部路网、法规和历史分布得到的通用车辆驶入/驶出、掉头风险和停车难度。
+3. $R_{\mathrm{meet}}$：订单后的实际会合偏差、等待、电话/聊天和找车；是延迟监督，不是在线上下文。
+4. $R_{\mathrm{system}}$：请求时可见的路缘占用、拥堵、容量和公平。
+5. $R_{\mathrm{business}}$：接受、发单、完成和点位相关投诉。
 
 总体 reward：
 
 ```math
-R=G_{\mathrm{valid}}G_{\mathrm{legal}}G_{\mathrm{reachable}}G_{\mathrm{constraint}}(w_uR_{\mathrm{user}}+w_dR_{\mathrm{driver}}+w_mR_{\mathrm{meet}}+w_tR_{\mathrm{trip}}+w_sR_{\mathrm{system}}+w_bR_{\mathrm{business}})-P
+R=G_{\mathrm{valid}}G_{\mathrm{legal}}G_{\mathrm{reachable}}G_{\mathrm{constraint}}(w_uR_{\mathrm{user}}+w_vR_{\mathrm{vehicle}}+w_mR_{\mathrm{meet}}+w_sR_{\mathrm{system}}+w_bR_{\mathrm{business}})-P
 ```
+
+$R_{\mathrm{meet}}$ 和完成/投诉类 $R_{\mathrm{business}}$ 由 $y_{\mathrm{post}}$ 构造。它们可监督“发单前选择什么点更可能成功”，但实际司机、供需、价格和订单路线都是混杂因素；应做原因过滤、场景匹配、IPS/DR 或随机流量校正，并单独报告只用请求时可观测信号的 reward 消融。
 
 ### 10.4.3 条件化归一化
 
@@ -2090,8 +2493,7 @@ R=G_{\mathrm{valid}}G_{\mathrm{legal}}G_{\mathrm{reachable}}G_{\mathrm{constrain
 ```text
 city
 scene_type
-pickup/dropoff
-pre/post-dispatch
+request_type=pickup/dropoff
 time_of_day
 weather
 anchor_category
@@ -2104,16 +2506,17 @@ mobility_constraint
 R_{\mathrm{walk}}=1-F_{\mathrm{bucket}}(\log(1+t_{\mathrm{walk}}))
 ```
 
-司机绕行同理，但 pickup 和 dropoff 权重不同。
+车辆通用可达成本和历史会合 outcome 同理，但 pickup 和 dropoff 必须分别归一化。
 
 ### 10.4.4 Pickup/Dropoff 权重区别
 
 Pickup：
 
 ```text
-meeting synchronization
-driver approach
-rider wait
+pickup legality and rider access
+generic vehicle approachability
+historical meeting success
+rider/driver wait as delayed outcome
 call/chat
 curb pickup capacity
 ```
@@ -2124,7 +2527,7 @@ Dropoff：
 destination entrance satisfaction
 post-walk
 safe door opening
-vehicle trip tail detour
+generic vehicle ingress/egress
 dropoff legality
 ```
 
@@ -2139,10 +2542,12 @@ Hard rule engine：
   法规、关闭、操作类型、可达性、安全
 
 Deterministic simulator/route engine：
-  步行、车行、掉头、ETA、首尾段成本
+  PU的用户位置→上车点步行
+  DO的下车点→目标入口步行
+  点位局部车行可达、转向和合法性
 
 Learned RM：
-  会合成功、可识别性、用户接受和复杂交互
+  条件化会合成功、可识别性、用户接受和订单后复杂交互
 ```
 
 Learned RM 不能覆盖硬规则；路线引擎的不可用/超时也不能被当作零成本。
@@ -2163,14 +2568,16 @@ prefix reward 还需融合：
 
 ```text
 namespace/action是否正确
-prefix是否合法
-是否仍覆盖任一可接受点
-prefix道路侧向/楼层纯度
-prefix内可行点比例
-prefix centroid与有效点embedding相似度
+R5是否位于当前anchor的服务区域
+child5→9能否与R5重建合法R9
+child9→13能否与R9重建合法R13
+当前H3 prefix是否仍覆盖任一可接受点
+R13是否为可接受cell或边界邻接cell
+local leaf是否存在、active且action合法
+最终action-point是否满足道路侧向、楼层和约束
 ```
 
-OneSearch-V2 式 TPMA 只能在确认 GAOQ prefix 具有稳定业务含义后使用。
+H3 prefix 的 token credit 来自确定性的地理层级，不需要先证明 GAOQ prefix 的业务纯度。但不能把“同一 R13”直接等同于“同一道路侧或楼层”：这些属性只在 local leaf lookup 后判断。对 H3 边界附近的多正确点，使用可接受 cell 集合或 `gridDisk` 邻接衰减，避免精确 cell match 造成边界惩罚。若实验 local GAOQ suffix，再单独增加语义 prefix reward。
 
 ## 10.6 延迟反馈和 on-policy
 
@@ -2197,12 +2604,12 @@ GRPO 优先使用本模型真实展现流量。历史策略日志用于 warm sta
 | P1 Action-point 库 | 物理点拆分、道路侧向、楼层、法规和版本 | 1～2城市全量点 | 合法率、覆盖率、重复率 | 候选覆盖现网高质量会合 |
 | P2 传统基线 | 规则、MPLRec式、LambdaMART、DeepFM、图模型 | 全量日志 | HR/NDCG、会合、绕行 | 建立可信强基线 |
 | P3 Point Encoder | text-only、+struct、+road、+graph、+behavior、Q-Former | 0.1～1B边/对 | ctx2point Recall、关系准确率 | 多路融合优于 text-only |
-| P4 SID | H3、road-first、RQ-OPQ、GAOQ、FAMAE+GAOQ | 全量action-point | utilization、collision、churn、HR | SID不劣于最强ANN/ID方案 |
+| P4 SID | 相对H3前缀主方案、绝对H3、细粒度H3、H3+local GAOQ、全局量化 | 全量action-point | 父子链可逆率、leaf冲突/溢出/churn、HR | catalog往返100%，且主SID不劣于最强ANN/ID方案 |
 | P5 CPT | warm-up→点位对齐→行为 co-pretrain | 0.5～2B→5～12B tokens | SID PPL、道路关系、长尾 | 新token稳定且基础能力无明显回退 |
-| P6 SFT | pickup/dropoff、pre/post、多正例、教师蒸馏 | 10M→50～150M | HR/MRR、硬约束、会合proxy | 达到或超过传统强基线 |
+| P6 SFT | 独立 pickup/dropoff、单anchor、多正例、教师蒸馏 | 10M→50～150M | HR/MRR、硬约束、会合proxy | 达到或超过传统强基线 |
 | P7 DPO | 规则、路线、履约和 self-hard | 3～15M pairs | 会合、绕行、Recall回退 | 质量提升且覆盖不坍缩 |
 | P8 GRPO/TPMA | on-policy 多目标 reward | 0.2～1M×8～16/轮 | reward稳定、长尾、hacking | 无安全/头部/容量异常 |
-| P9 动态与容量 | post-dispatch、协调器 rerank | 重点城市/枢纽 | 等待、接驾、容量 | 单请求与系统指标均改善 |
+| P9 请求时动态与容量 | 临时关闭/交通/路缘快照、协调器 rerank | 重点城市/枢纽 | 接受、会合、容量 | 单请求与系统指标均改善 |
 | P10 Shadow/A-B | 额外候选源→融合→主推荐 | 1%→5%→20% | P99、会合、投诉、履约 | 所有护栏满足后扩量 |
 
 ## 11.2 建议学习率搜索
@@ -2219,8 +2626,11 @@ GRPO KL coefficient：0.01 ～ 0.05
 
 ```text
 新增token embedding norm
-不同SID位置梯度
-输出熵和码本利用率
+R5、child_5_9、child_9_13和leaf位置梯度
+active R5覆盖率和未知R5率
+合法child position利用率与条件熵
+local leaf利用率、冲突、溢出和churn
+H3边界样本的召回与相邻cell混淆
 pickup/dropoff namespace混淆
 通用能力回退
 头部点位集中度
@@ -2245,23 +2655,23 @@ gated fusion vs Q-Former
 
 ```text
 random
-H3+road side
-RQ-OPQ
-shared GAOQ
-dual-namespace GAOQ
-FAMAE+dual GAOQ
+absolute H3: <R5_ID><R9_ID><R13_ID><LEAF>
+relative H3: <R5_CELL><CHILD_5_9_POS><CHILD_9_13_POS><LEAF>（主方案）
+finer relative H3: R5→R7→R9→R11→R13→LEAF
+relative H3 + road-side/level-aware leaf
+relative H3 + local GAOQ + leaf
+RQ-OPQ / global dual-namespace GAOQ（全局量化对照）
 ```
 
 ### Context
 
 ```text
-only anchor
-+full OD
+task token + single selected anchor
++PU user GPS / DO destination subarea
 +time/weather
 +user explicit constraints
 +short history
-+driver post-dispatch
-+dynamic capacity
++request-time traffic/closure/capacity
 ```
 
 ### Training
@@ -2279,7 +2689,9 @@ CPT+SFT+DPO+GRPO
 ```text
 unconstrained beam + filter
 namespace constrained
-region/scene trie constrained
+H3 version + active R5 constrained
+parent-child-position trie constrained
+local leaf constrained
 +dynamic route rerank
 +capacity coordinator
 ```
@@ -2293,11 +2705,15 @@ region/scene trie constrained
 ```mermaid
 flowchart LR
     subgraph Offline["离线"]
-        P["Action-point库"] --> E["多路Point Encoder"]
+        P["Action-point库"] --> H3["标准坐标到H3 R13父链和相对子位置"]
+        P --> L["版本化stable local leaf分配"]
+        P --> E["多路Point Encoder"]
         G["步行/车行/语义图"] --> E
         B["行为与履约日志"] --> E
-        E --> Q["Map-GAOQ量化"]
-        Q --> I["SID lookup / trie / 版本索引"]
+        E -.->|"可选消融"| Q["R13内local GAOQ"]
+        H3 --> I["SID lookup / trie / 版本索引"]
+        L --> I
+        Q -.->|"可选后缀"| I
         B --> T["CPT/SFT/DPO/GRPO训练"]
         I --> T
         T --> M["生成模型"]
@@ -2310,7 +2726,7 @@ flowchart LR
     end
 
     subgraph Online["在线"]
-        U["anchor/OD/GPS/约束/司机状态"] --> N["上下文规范化"]
+        U["task/单anchor/请求局部信号/约束"] --> N["上下文规范化"]
         N --> M
         M --> S["Beam生成Top-K SID"]
         I --> S
@@ -2327,7 +2743,7 @@ flowchart LR
 
 线上只输出 SID，原因：
 
-- 3～4 个 token 可控制延迟。
+- `<PU>/<DO>` 和 `<sid_v4>` 由协议强制后，模型只需生成固定 4 个 SID token。
 - 自然语言 reasoning 会增加几十个 token。
 - 地图事实变化快，在线长解释容易幻觉。
 - 用户解释可由模板根据已验证字段生成。
@@ -2336,7 +2752,7 @@ flowchart LR
 
 ```text
 推荐“北门辅路上车点”
-原因：与您同侧、司机无需掉头、步行约2分钟。
+原因：与您同侧、可合法上车、步行约2分钟。
 ```
 
 所有原因必须来自验证后的结构字段，而不是生成模型自由编写。
@@ -2346,12 +2762,12 @@ flowchart LR
 ```text
 System:
 你是地图上下车点决策教师。只根据给定地图、道路、法规、
-步行、司机和动态事实选择候选，不得补造事实。
+步行、通用车辆可达和请求时动态事实选择候选，不得补造事实。
 
 Task:
-1. 识别pickup/dropoff和决策stage。
+1. 识别当前独立请求是pickup还是dropoff。
 2. 先排除非法、关闭、不可达和违反显式约束的点。
-3. 比较乘客步行、司机绕行、ETA同步、目的地入口和路缘容量。
+3. 比较乘客步行、点位通用车辆可达、入口服务、历史会合和路缘容量。
 4. 输出结构化hard_constraints、soft_tradeoff和target_sid。
 
 Input:
@@ -2365,41 +2781,39 @@ Input:
 ```text
 <task=PUDO_RECOMMEND>
 <action=PU>
-<stage=POST_DISPATCH>
-<origin_anchor=虹桥火车站>
-<origin_semantic_location=西出站口>
-<destination=陆家嘴国金中心>
+<selected_anchor=虹桥火车站>
+<semantic_location=西出站口>
 <gps_accuracy=50_100>
 <time=weekday_evening_peak>
 <weather=rain>
 <walk_budget=300m>
-<driver_road=申虹路>
-<driver_heading=southwest>
-<driver_eta=5_10min>
-<sid_version=v3>
+<sid_version=v4>
 
 Output:
-<PU><m1_037><m2_181><leaf_029>
+<PU><sid_v4><r5_0187><child_5_9_0782><child_9_13_1140><leaf_003>
 ```
+
+其中示例数字只表示 token 形态。生产数据必须先从 action-point 的标准代表坐标计算 `c13`，再向上取得 `c9`、`c5` 和两个 `cellToChildPos`，最后查版本化 local leaf 表，不能按样例数字人工拼接。
 
 ## 12.5 紧凑线上 Prompt
 
 ```text
-<PUDO><PU><POST>
-<AOI_8841><SEM_WEST_EXIT><DEST_CELL_1208>
+<PUDO><PU>
+<AOI_8841><SEM_WEST_EXIT>
 <GPS_ACC_50_100><WKD_PM_PEAK><RAIN>
-<WALK_200_300><DRV_ROAD_331><DRV_HEAD_SW><DRV_ETA_5_10>
-<SID_V3>
+<WALK_200_300><TRAFFIC_SLOW><CURB_NORMAL>
+<SID_V4>
 ```
 
-不在线拼接长地址、整张图描述或候选列表。
+DO 请求将 `<PU>` 换为 `<DO>`，只放已选终点及入口/子区域信号；不拼接起点。两类请求均不在线拼接长地址、整张图描述、候选列表或司机字段。
 
 ## 12.6 Top-K 生成
 
 主方案：
 
 ```text
-一条beam = 一个固定长度SID
+协议强制 <PU/DO><SID_V4>
+一条beam = <R5_CELL><CHILD_5_9_POS><CHILD_9_13_POS><LEAF>
 beam32/64 = 并行候选
 decode后去重physical point和近重复点
 最终展示1～5个
@@ -2417,13 +2831,14 @@ SID1, SID2, SID3 ... 串行长列表生成
 
 分层约束：
 
-1. `<PU>/<DO>` namespace mask。
-2. SID 版本 mask。
-3. 城市/局部区域 prefix mask。
-4. prefix→下一 token GPU bitset/trie。
-5. lookup 后按动态状态、步行预算和路线做最终过滤。
+1. 按当前独立请求强制 `<PU>` 或 `<DO>`，并强制 `<sid_v4>`。
+2. 根据服务区和 action-point 库版本，对 active `<R5_CELL>` 做 allowlist；不能只按一个中心点的圆形半径裁剪。
+3. 给定 R5，通过 H3 版本绑定的 trie/bitset 只允许该父网格下已收录的 `<CHILD_5_9_POS>`。
+4. 给定 R9 prefix，同样只允许已收录的 `<CHILD_9_13_POS>`；解码服务可反解出唯一 R13。
+5. 给定 `(action, R13)`，只允许当前 catalog 版本的 active `<LEAF>`，再 lookup 为 action-point。
+6. lookup 后按关闭状态、动态法规、步行预算、路线和容量做最终硬过滤或 rerank。
 
-区域约束不能过窄，否则会过滤特殊枢纽的远端指定上客区。应使用预计算 action-point service region，而不是简单圆形半径。
+区域约束不能过窄，否则会过滤特殊枢纽的远端指定上客区。应将预计算 action-point service region 映射成一组 active R5/R13 prefix，而不是简单圆形半径。边界处可以纳入相邻 R13 或预先标注的 acceptable-cell 集合，但不能允许任意非法 child position。
 
 ## 12.8 动态 reranker
 
@@ -2431,12 +2846,10 @@ SID1, SID2, SID3 ... 串行长列表生成
 
 ```text
 exact walk route
-driver approach route
-trip tail route
-U-turn/road-side
+generic vehicle accessibility
+local turn/road-side legality
 current traffic
 curb occupancy
-ETA synchronization
 hard policy
 ```
 
@@ -2460,7 +2873,7 @@ LambdaMART
 | 网关、anchor和session读取 | 10～25ms |
 | 结构化上下文和缓存查询 | 10～25ms |
 | prompt tokenize/prefill | 15～40ms |
-| 3～4 token、beam32/64解码 | 30～75ms |
+| 固定4个SID token、beam32/64约束解码 | 30～75ms |
 | SID lookup和硬过滤 | 5～15ms |
 | Top候选路线/动态rerank | 25～70ms |
 | 排队、网络和异常余量 | 35～70ms |
@@ -2481,22 +2894,30 @@ anchor×action×time_bucket缓存
 超时立即fallback
 ```
 
-## 12.10 Pre-dispatch 与 Post-dispatch 两段式
+## 12.10 两次独立调用、缓存与协议校验
 
 ```text
-Pre-dispatch:
-  给出稳定候选，帮助用户选择并发单
+Call A:
+  trigger=用户选择起点
+  cache_key=PU×sid_v4×catalog_v18×selected_origin×pickup_local_context_signature
+  output=pickup SID list
 
-Post-dispatch:
-  司机分配后判断是否值得调整
-  只有收益超过阈值且用户代价可解释时才推荐变更
+Call B:
+  trigger=用户选择终点
+  cache_key=DO×sid_v4×catalog_v18×selected_destination×dropoff_local_context_signature
+  output=dropoff SID list
 ```
 
-频繁改变点位会损害信任。post-dispatch 应增加 change penalty：
+服务端做三项强校验：
 
-```math
-R_{\mathrm{post}}=R_{\mathrm{newPoint}}-\lambda_{\mathrm{change}}C_{\mathrm{userConfusion}}
+```text
+PU prompt 不得含 selected_destination、driver_state 或 DO target
+DO prompt 不得含 selected_origin、driver_state 或 PU target
+每次响应只能命中当前 action namespace
+sid_version、H3 library、R5 dictionary、leaf table和catalog版本必须与lookup/trie一致
 ```
+
+同一发单 session 可共享用户授权历史、天气和点位动态快照缓存，但不能把另一端点写入模型 prompt 或 cache key。动态快照版本也应进入候选过滤/rerank 缓存 key；SID catalog 切换时主动失效旧结果。派单后和行程中改点属于另一个产品任务，若未来立项，应使用独立协议、数据集和验收指标，不能混入本实验。
 
 ## 12.11 混合推荐与降级
 
@@ -2515,7 +2936,7 @@ fallback 触发：
 
 ```text
 模型超过120～150ms
-SID版本不匹配
+SID/H3/R5/leaf/catalog版本不匹配
 合法候选不足
 路线服务超时
 所有候选被动态状态过滤
@@ -2565,15 +2986,16 @@ accessible-route satisfaction
 shelter/lighting satisfaction
 ```
 
-### 司机与行程
+### 订单后的车辆与履约诊断指标
 
 ```text
-approach detour
-U-turn rate
-pickup ETA
-trip first/last-leg detour
-route-time saving
+assigned-driver approach detour
+assigned-driver U-turn rate
+pickup ETA and wait
+actual route endpoint cost
 ```
+
+这些指标发生在发单和司机分配后，用于评估点位决策的后果；必须控制司机分配、供需、价格、距离和交通等混杂因素，不可作为请求输入泄漏。
 
 ### 会合与系统
 
@@ -2614,7 +3036,7 @@ congestion externality
 法规违规
 无障碍约束失败
 步行P95/P99
-司机绕行P95/P99
+订单后 assigned-driver approach cost P95/P99（归因诊断）
 路缘容量超限
 P50/P95/P99 latency
 GPU成本
@@ -2627,14 +3049,18 @@ GPU成本
 |---|---|---|
 | 任意坐标幻觉 | 点落在道路、隔离带或错误楼层 | 只生成审核 SID，禁止直接坐标 |
 | 直线距离误导 | 道路对面或需掉头 | 步行/车行图、road-side 和 route reward |
-| 动态特征污染 SID | 码本分钟级 churn | 静态点位量化，动态只进 context/rerank |
+| 标准坐标漂移跨越 R13 | 同一物理点因地图编辑获得新 prefix | 固定 canonical point 规则；小幅编辑保持坐标；确需跨格时新SID+旧SID迁移窗口 |
+| H3版本或R5词表不一致 | 训练可解码、线上反解失败 | 固定H3库版本、active R5字典和catalog版本；发布前全量往返校验 |
+| H3边界惩罚 | 相邻格的等价点被当成完全错误 | acceptable-cell集合、邻格衰减和最终action-point多正例 |
+| local leaf冲突或溢出 | 同一action×R13容纳不了新增点 | 确定性槽位表、tombstone、reserved leaf、容量告警和版本迁移 |
+| 动态特征污染 SID | SID随交通、天气或容量分钟级变化 | H3 prefix和leaf只用静态catalog；动态只进context/filter/rerank |
 | 接受率 reward hacking | 默认热门点压过合法/约束 | 硬 gate；会合和履约后验优先 |
 | 旧策略曝光偏差 | 只学习现网头部点 | 随机流量、IPS/SNIPS/DR、on-policy |
 | 单标签惩罚其他好点 | 多正确点覆盖坍缩 | MML、set/list reward、阈值 pair |
 | GPS/楼层噪声 | 错误 actual point 标签 | 轨迹地图匹配、事件窗口和置信度权重 |
 | 取消归因错误 | 供给/价格取消惩罚点位 | 原因拆分和弱标签 |
 | 个性化压过当前事实 | 习惯点已关闭仍推荐 | legality gate、history dropout |
-| Post-dispatch 频繁改点 | 用户困惑、会合反而失败 | change penalty、收益阈值、允许保留原点 |
+| 训练/服务协议混入另一端点或司机 | 离线虚高、线上字段缺失和分布错位 | schema allowlist、feature cutoff、请求回放测试 |
 | 热点过度集中 | 路缘拥堵和排队 | 容量快照、系统 reward、协调器 |
 | pickup/dropoff 混淆 | 上客点用于下客或反之 | 双 namespace 和独立 mask |
 | 新/临时点不可召回 | 活动和施工响应慢 | delta/运营分支、reserved slot 实验 |
@@ -2656,7 +3082,7 @@ GPU成本
 ```text
 Action-point库
 → 多路静态Encoder
-→ dual-namespace Map-GAOQ
+→ dual-namespace相对H3地理前缀 + stable local leaf
 → SID warm-up/CPT
 → 多正例SFT
 → beam候选
@@ -2685,12 +3111,12 @@ Action-point库
 + 1个新AOI冷启动集合
 ```
 
-首轮只做 pickup，输入覆盖：
+首轮先做 pickup，再复用同一框架做独立 dropoff；输入覆盖：
 
 ```text
-only-origin
-full-OD
-pre-dispatch
+PU：task + selected_origin + user GPS/语义位置
+DO：task + selected_destination + entrance/subarea
+两者：time/weather/显式约束/短历史/请求时动态状态
 ```
 
 模型和基线：
@@ -2698,18 +3124,20 @@ pre-dispatch
 ```text
 LambdaMART/DeepFM
 QwenEmbedding ANN + ranker
-Qwen3-1.7B + RQ-OPQ SID
-Qwen3.5-2B + dual GAOQ SID
-Qwen3.5-2B + FAMAE + dual GAOQ SID
+Qwen3-1.7B + relative H3 prefix + stable local leaf
+Qwen3.5-2B + relative H3 prefix + stable local leaf
+Qwen3.5-2B + relative H3 prefix + local GAOQ + stable local leaf
+RQ-OPQ / global dual GAOQ SID（量化对照）
 ```
 
-训练先到 CPT+SFT，不做 RL。若满足第13.5节，再增加 DPO 和 post-dispatch。
+训练先到 CPT+SFT，不做 RL。若满足第13.5节，再增加 DPO；本实验不增加 post-dispatch 分支。
 
 最小可验证问题：
 
 ```text
 生成式SID能否在同样候选库下，
-更好地利用anchor、完整OD、道路侧向、点位关系和用户短历史，
+分别利用当前task、单个selected anchor、请求局部信号、道路侧向、
+点位关系和用户短历史，
 召回后置route-ranker真正需要的高质量点位？
 ```
 
@@ -2750,3 +3178,9 @@ Qwen3.5-2B + FAMAE + dual GAOQ SID
 - [Qwen3 官方介绍](https://qwenlm.github.io/blog/qwen3/)
 - [Qwen3.5-2B-Base 模型卡](https://huggingface.co/Qwen/Qwen3.5-2B-Base)
 - [Qwen3-Embedding-0.6B 模型卡](https://huggingface.co/Qwen/Qwen3-Embedding-0.6B)
+
+## H3
+
+- [H3 官方文档](https://h3geo.org/docs/)
+- [H3 Hierarchical Relationships API](https://h3geo.org/docs/api/hierarchy/)
+- [H3 Resolution Table](https://h3geo.org/docs/core-library/restable/)
