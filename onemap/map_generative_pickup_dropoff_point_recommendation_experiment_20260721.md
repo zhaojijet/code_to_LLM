@@ -22,18 +22,18 @@
 
 核心符号：
 
-- $\tau$：当前独立请求的类型，$\tau\in\{\mathrm{PU},\mathrm{DO}\}$。
-- $a$：当前请求唯一的已选 anchor；PU 请求中是已选起点，DO 请求中是已选终点。
-- $g_\tau$：当前请求可用的乘客定位信号；PU 通常使用，DO 通常为空或只保留与终点局部定位有关的信号。
-- $r$：一次点位推荐请求。
-- $u$：候选 action-point。
-- $c_\tau$：由 $(\tau,a,g_\tau,t,w,b,h)$ 和请求时可见的道路/点位状态组成的在线上下文。
-- $y_{\mathrm{post}}$：订单发出、司机分配及履约后产生的轨迹、等待、沟通和完成结果，只用于标签、reward 或离线评估。
-- $t$：时间、日期、节假日。
-- $w$：天气和可见度。
-- $h$：当前 session 和用户显式授权使用的短期历史。
-- $b$：乘客步行、无障碍、行李等显式约束。
-- $A^+(c)$：上下文 $c$ 下可接受的多正确点位集合。
+- `τ`：当前独立请求的类型，`τ ∈ {PU, DO}`。
+- `a`：当前请求唯一的已选 anchor；PU 请求中是已选起点，DO 请求中是已选终点。
+- `g_τ`：当前请求可用的乘客定位信号；PU 通常使用，DO 通常为空或只保留与终点局部定位有关的信号。
+- `r`：一次点位推荐请求。
+- `u`：候选 action-point。
+- `c_τ`：由 `(τ, a, g_τ, t, w, b, h)` 和请求时可见的道路/点位状态组成的在线上下文。
+- `y_post`：订单发出、司机分配及履约后产生的轨迹、等待、沟通和完成结果，只用于标签、reward 或离线评估。
+- `t`：时间、日期、节假日。
+- `w`：天气和可见度。
+- `h`：当前 session 和用户显式授权使用的短期历史。
+- `b`：乘客步行、无障碍、行李等显式约束。
+- `A⁺(c)`：上下文 `c` 下可接受的多正确点位集合。
 
 本文不把 action-point 简化为一个经纬度。建议定义：
 
@@ -124,7 +124,7 @@ output=<DO> namespace 内的一个或多个 dropoff SID
 
 此时不读取起点，也没有已分配司机。目标是选择服务正确入口、下车合法安全、下车后步行成本低且易识别的下车点。
 
-两类请求可共享 backbone、点位 Encoder、H3 child-position token embedding 和部分索引结构，但 local leaf 表、训练记录、合法 mask、reward 权重、缓存 key 和线上指标必须按 $\tau$ 分开。当前实验不做完整 OD 条件化、上下车点联合生成或派单后重推荐。
+两类请求可共享 backbone、点位 Encoder、H3 child-position token embedding 和部分索引结构，但 local leaf 表、训练记录、合法 mask、reward 权重、缓存 key 和线上指标必须按 `τ` 分开。当前实验不做完整 OD 条件化、上下车点联合生成或派单后重推荐。
 
 ## 2.3 与 POI 搜索的根本差异
 
@@ -1002,7 +1002,7 @@ z_{\mathrm{static}}=f_{\mathrm{point}}(\mathrm{stablePointFields})
 z_{\mathrm{context}}=f_{\mathrm{ctx}}(\tau,a,g_\tau,t,w,b,h,\mathrm{traffic},\mathrm{capacity})
 ```
 
-主方案的 H3 prefix 只由 action-point 标准代表坐标和固定 H3 版本确定；stable local leaf 由 `(action namespace, R13 cell, action_point_id)` 的版本化槽位表分配。$z_{\mathrm{static}}$ 用于检索、排序、leaf 辅助预测以及可选 local GAOQ 消融，不决定主方案的地理 prefix。模型条件和 reranker 使用 $z_{\mathrm{context}}$。订单后的司机轨迹可进入 $L_{\mathrm{behavior}}$ 的监督目标，但不能进入 $z_{\mathrm{context}}$。
+主方案的 H3 prefix 只由 action-point 标准代表坐标和固定 H3 版本确定；stable local leaf 由 `(action namespace, R13 cell, action_point_id)` 的版本化槽位表分配。`z_static` 用于检索、排序、leaf 辅助预测以及可选 local GAOQ 消融，不决定主方案的地理 prefix。模型条件和 reranker 使用 `z_context`。订单后的司机轨迹可进入 `L_behavior` 的监督目标，但不能进入 `z_context`。
 
 ## 6.9 Encoder loss
 
@@ -1012,12 +1012,12 @@ L_{\mathrm{enc}}=\lambda_1L_{\mathrm{ctx2point}}+\lambda_2L_{\mathrm{behavior}}+
 
 其中：
 
-- $L_{\mathrm{ctx2point}}$：context–point InfoNCE，多正例版本。
-- $L_{\mathrm{behavior}}$：会合成功/失败 pairwise 或 calibrated BCE。
-- $L_{\mathrm{fieldMask}}$：FAMAE。
-- $L_{\mathrm{roadRelation}}$：道路侧向、方向和路线桶。
-- $L_{\mathrm{graphLink}}$：步行/车行/语义图 link prediction。
-- $L_{\mathrm{modalityConsistency}}$：随机丢弃视觉、行为或文本模态后的表征一致性。
+- `L_ctx2point`：context–point InfoNCE，多正例版本。
+- `L_behavior`：会合成功/失败 pairwise 或 calibrated BCE。
+- `L_fieldMask`：FAMAE。
+- `L_roadRelation`：道路侧向、方向和路线桶。
+- `L_graphLink`：步行/车行/语义图 link prediction。
+- `L_modalityConsistency`：随机丢弃视觉、行为或文本模态后的表征一致性。
 
 ---
 
@@ -1166,7 +1166,7 @@ R5 token 不建议覆盖全球全部约 202 万个 cell；只把服务点位库�
 <PU><R5><CHILD_5_9><CHILD_9_13><LOCAL_GAOQ><LEAF>
 ```
 
-Local GAOQ 只在同一 R13 或邻近局部桶内对 $z_{\mathrm{point}}$ 做语义/行为分组，不负责全局地理层级。FAMAE、GraphEncoder 和 BehaviorEncoder 在这里用于改善 local semantic suffix 或 leaf 预测。它是消融方案，不是第一版依赖。
+Local GAOQ 只在同一 R13 或邻近局部桶内对 `z_point` 做语义/行为分组，不负责全局地理层级。FAMAE、GraphEncoder 和 BehaviorEncoder 在这里用于改善 local semantic suffix 或 leaf 预测。它是消融方案，不是第一版依赖。
 
 ## 7.5 为什么动态信息不进入 SID
 
@@ -1558,7 +1558,7 @@ Output:
   map_match_confidence=high
 ```
 
-本样本在订单结束后构造。司机轨迹是 $y_{\mathrm{post}}$ 的标签来源，用于确认实际点位；训练时应使用专门的 outcome/label 模板，不能与线上 prompt 拼接，也不能让 CPT 预测目标时看到未来轨迹。
+本样本在订单结束后构造。司机轨迹是 `y_post` 的标签来源，用于确认实际点位；训练时应使用专门的 outcome/label 模板，不能与线上 prompt 拼接，也不能让 CPT 预测目标时看到未来轨迹。
 
 ### CPT-17：会合结果序列
 
@@ -1673,7 +1673,7 @@ L_{\mathrm{CPT}}=-\sum_t w_{\mathrm{type}(x_t)}\log P_\theta(x_t\mid x_{1:t-1})+
 
 - SID、关系答案和目标点位 token 权重高于输入上下文。
 - 原始曝光列表不作为目标或显著降权。
-- $L_{\mathrm{retain}}$ 使用通用文本 CE 或对原始基座做 KL anchor。
+- `L_retain` 使用通用文本 CE 或对原始基座做 KL anchor。
 - encoder 的图、字段和对比 loss 保留在 Encoder 阶段。
 - 动态状态样本要做 timestamp masking，防止未来信息泄漏。
 
@@ -2083,11 +2083,11 @@ L_{\mathrm{SFT}}=L_{\mathrm{CE}}+\lambda_mL_{\mathrm{MML}}+\lambda_dL_{\mathrm{K
 
 说明：
 
-- $L_{\mathrm{CE}}$：response-only SID CE。
-- $L_{\mathrm{MML}}$：多正确点位。
-- $L_{\mathrm{KD}}$：内化复杂道路和动态推理。
-- $L_{\mathrm{RDrop}}$：相同输入不同 dropout 的分布一致性。
-- $L_{\mathrm{UL}}$：只用于非法、关闭、错误 action、错楼层等高置信负例。
+- `L_CE`：response-only SID CE。
+- `L_MML`：多正确点位。
+- `L_KD`：内化复杂道路和动态推理。
+- `L_RDrop`：相同输入不同 dropout 的分布一致性。
+- `L_UL`：只用于非法、关闭、错误 action、错楼层等高置信负例。
 
 位置加权：
 
@@ -2472,11 +2472,11 @@ pickup/dropoff非法
 
 ### 10.4.2 五类软 reward
 
-1. $R_{\mathrm{user}}$：步行时间、步行复杂度、雨棚、照明、无障碍、下车后尾段。
-2. $R_{\mathrm{vehicle}}$：由局部路网、法规和历史分布得到的通用车辆驶入/驶出、掉头风险和停车难度。
-3. $R_{\mathrm{meet}}$：订单后的实际会合偏差、等待、电话/聊天和找车；是延迟监督，不是在线上下文。
-4. $R_{\mathrm{system}}$：请求时可见的路缘占用、拥堵、容量和公平。
-5. $R_{\mathrm{business}}$：接受、发单、完成和点位相关投诉。
+1. `R_user`：步行时间、步行复杂度、雨棚、照明、无障碍、下车后尾段。
+2. `R_vehicle`：由局部路网、法规和历史分布得到的通用车辆驶入/驶出、掉头风险和停车难度。
+3. `R_meet`：订单后的实际会合偏差、等待、电话/聊天和找车；是延迟监督，不是在线上下文。
+4. `R_system`：请求时可见的路缘占用、拥堵、容量和公平。
+5. `R_business`：接受、发单、完成和点位相关投诉。
 
 总体 reward：
 
@@ -2484,7 +2484,7 @@ pickup/dropoff非法
 R=G_{\mathrm{valid}}G_{\mathrm{legal}}G_{\mathrm{reachable}}G_{\mathrm{constraint}}(w_uR_{\mathrm{user}}+w_vR_{\mathrm{vehicle}}+w_mR_{\mathrm{meet}}+w_sR_{\mathrm{system}}+w_bR_{\mathrm{business}})-P
 ```
 
-$R_{\mathrm{meet}}$ 和完成/投诉类 $R_{\mathrm{business}}$ 由 $y_{\mathrm{post}}$ 构造。它们可监督“发单前选择什么点更可能成功”，但实际司机、供需、价格和订单路线都是混杂因素；应做原因过滤、场景匹配、IPS/DR 或随机流量校正，并单独报告只用请求时可观测信号的 reward 消融。
+`R_meet` 和完成/投诉类 `R_business` 由 `y_post` 构造。它们可监督“发单前选择什么点更可能成功”，但实际司机、供需、价格和订单路线都是混杂因素；应做原因过滤、场景匹配、IPS/DR 或随机流量校正，并单独报告只用请求时可观测信号的 reward 消融。
 
 ### 10.4.3 条件化归一化
 
