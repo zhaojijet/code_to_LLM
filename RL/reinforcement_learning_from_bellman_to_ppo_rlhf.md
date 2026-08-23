@@ -418,8 +418,11 @@ G_t=R_{t+1}+\gamma R_{t+2}+\cdots
 ```math
 V^\pi(s)
 \approx
-\operatorname{avg}\{G_t\mid S_t=s\}
+\frac{1}{N_s}
+\sum_{i=1}^{N_s}G_t^{(i)}
 ```
+
+其中，`Nₛ` 是状态 `s` 被采样到的回报数量，`Gₜ⁽ⁱ⁾` 是第 `i` 个对应回报。
 
 增量更新：
 
@@ -434,8 +437,11 @@ V(S_t)+\alpha[G_t-V(S_t)]
 ```math
 Q^\pi(s,a)
 \approx
-\operatorname{avg}\{G_t\mid S_t=s,A_t=a\}
+\frac{1}{N_{s,a}}
+\sum_{i=1}^{N_{s,a}}G_t^{(i)}
 ```
+
+其中，`Nₛ,ₐ` 是状态—动作对 `(s,a)` 被采样到的回报数量。
 
 ```math
 Q(S_t,A_t)
@@ -767,9 +773,11 @@ L_{\mathrm{actor}}(\theta)
 =-\mathbb E
 \left[
 \log\pi_\theta(A_t\mid S_t)\,
-\operatorname{stopgrad}(\widehat A_t)
+\mathrm{sg}[\widehat A_t]
 \right]
 ```
+
+这里，`sg[·]` 表示 stop-gradient：前向计算保留该数值，反向传播不经过它。
 
 最小化该 loss 等价于沿策略梯度方向最大化期望回报。
 
@@ -787,7 +795,7 @@ Critic loss：
 L_V(\phi)
 =\frac12
 \left[
-\operatorname{stopgrad}(y_t)-V_\phi(s_t)
+\mathrm{sg}[y_t]-V_\phi(s_t)
 \right]^2
 ```
 
@@ -1013,7 +1021,7 @@ L^{\mathrm{CLIP}}(\theta)
 \left[
 \min\left(
 r_t(\theta)\widehat A_t,
-\operatorname{clip}(r_t(\theta),1-\epsilon,1+\epsilon)
+\mathrm{clip}(r_t(\theta),1-\epsilon,1+\epsilon)
 \widehat A_t
 \right)
 \right]
@@ -1041,7 +1049,7 @@ r_t(\theta)\widehat A_t,
 
 ```math
 V_t^{\mathrm{target}}
-=\operatorname{stopgrad}
+=\mathrm{sg}
 \left[V_{\mathrm{old}}(s_t)+\widehat A_t^{\mathrm{GAE}}\right]
 ```
 
@@ -1412,7 +1420,7 @@ L^{\mathrm{CLIP}}(\theta)
 \left[
 \min\left(
 r_t(\theta)\widehat A_t,
-\operatorname{clip}
+\mathrm{clip}
 (r_t(\theta),1-\epsilon,1+\epsilon)\widehat A_t
 \right)
 \right].
